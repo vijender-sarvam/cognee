@@ -70,8 +70,8 @@ class ChunksRetriever(BaseRetriever):
               empty string if none are found.
         """
         if retrieved_objects:
-            chunk_payload_texts = [found_chunk.payload["text"] for found_chunk in retrieved_objects]
-            return "\n".join(chunk_payload_texts)
+            chunk_payload_texts = [found_chunk.payload.get("text", "") for found_chunk in retrieved_objects]
+            return "\n".join(filter(None, chunk_payload_texts))
         else:
             return ""
 

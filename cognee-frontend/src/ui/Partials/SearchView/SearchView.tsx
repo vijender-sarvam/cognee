@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LoadingIndicator } from "@/ui/App";
 import { CTAButton, Select, TextArea, Input } from "@/ui/elements";
 import useChat from "@/modules/chat/hooks/useChat";
+import { Dataset } from "@/modules/ingestion/useDatasets";
 
 import styles from "./SearchView.module.css";
 
@@ -18,14 +19,19 @@ interface SearchFormPayload extends HTMLFormElement {
   chatInput: HTMLInputElement;
 }
 
-const MAIN_DATASET = {
+const MAIN_DATASET: Dataset = {
   id: "",
   data: [],
   status: "",
   name: "main_dataset",
 };
 
-export default function SearchView() {
+interface SearchViewProps {
+  dataset?: Dataset;
+}
+
+export default function SearchView({ dataset }: SearchViewProps) {
+  const activeDataset = dataset ?? MAIN_DATASET;
   const searchOptions: SelectOption[] = [{
     value: "GRAPH_COMPLETION",
     label: "GraphRAG Completion",
@@ -50,8 +56,7 @@ export default function SearchView() {
     }, 300);
   }, []);
 
-  // Hardcoded to `main_dataset` for now, change when multiple datasets are supported.
-  const { messages, refreshChat, sendMessage, isSearchRunning } = useChat(MAIN_DATASET);
+  const { messages, refreshChat, sendMessage, isSearchRunning } = useChat(activeDataset);
 
   useEffect(() => {
     refreshChat()

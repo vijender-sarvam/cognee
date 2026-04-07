@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, List, Optional, Type, Union
 
 from cognee.modules.observability import OtelStatusCode as StatusCode
@@ -17,6 +18,8 @@ from cognee.modules.observability import (
 )
 from cognee.modules.retrieval.utils.node_edge_vector_search import NodeEdgeVectorSearch
 from cognee.modules.retrieval.utils.validate_queries import validate_queries
+from cognee.modules.retrieval.utils.debug_serializer import serialize_items
+from cognee.modules.retrieval.config import get_retrieval_config
 from cognee.shared.logging_utils import ERROR, get_logger
 from cognee.exceptions import CogneeValidationError
 
@@ -150,6 +153,83 @@ async def _get_top_triplet_importances(
     )
 
 
+def _payload_value(payload: dict) -> str:
+    """Extract the most readable value from a vector result payload.
+    Tries name → relationship_name → text in that order.
+    Text values are kept in full — the UI handles display truncation."""
+    for field in ("name", "relationship_name", "text"):
+        val = payload.get(field)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def _collection_item(coll_name: str, results: list) -> str:
+    """Build a single result_items entry for one collection:
+    header line with count, followed by each retrieved value on its own line.
+
+    Derives the primary field from the collection name convention
+    ``{TypeName}_{field_name}`` (e.g. Entity_name → name,
+    EdgeType_relationship_name → relationship_name).
+    Falls back to the generic _payload_value heuristic when the derived
+    field is absent."""
+    count = len(results)
+    header = f"{coll_name}  →  {count} result{'s' if count != 1 else ''}"
+
+    # Derive primary field from naming convention, e.g. "EntityType_name" → "name"
+    primary_field = coll_name.split("_", 1)[1] if "_" in coll_name else None
+
+    values: list[str] = []
+    for r in results:
+        payload = getattr(r, "payload", None)
+        val = ""
+
+        # 1. Try the collection's own primary field first (most precise)
+        if primary_field:
+            if isinstance(payload, dict):
+                val = payload.get(primary_field) or ""
+            if not val:
+                val = getattr(r, primary_field, None) or ""
+
+        # 2. Fall back to generic heuristic across common fields
+        if not val and isinstance(payload, dict):
+            val = _payload_value(payload)
+
+        if val and isinstance(val, str) and val.strip():
+            values.append(f"• {val.strip()}")
+
+    if values:
+        return header + "\n" + "\n".join(values)
+    return header
+
+
+def _count_vector_hits(vector_search: NodeEdgeVectorSearch) -> tuple[int, list[str]]:
+    """Return (total_hits, per_collection_item_strings) for the debug trace.
+    Only collections with at least one result are included.
+    Each item string contains the collection header + one bullet per retrieved value."""
+    items: list[str] = []
+    total = 0
+    for coll, results in vector_search.node_distances.items():
+        if not isinstance(results, list) or not results:
+            continue
+        # Skip batch-mode (list-of-lists) — each inner element would be a list
+        if isinstance(results[0], list):
+            continue
+        total += len(results)
+        items.append(_collection_item(coll, results))
+
+    edge_results = vector_search.edge_distances
+    if (
+        isinstance(edge_results, list)
+        and edge_results
+        and not isinstance(edge_results[0], list)
+    ):
+        total += len(edge_results)
+        items.append(_collection_item("EdgeType_relationship_name", edge_results))
+
+    return total, items
+
+
 async def brute_force_triplet_search(
     query: Optional[str] = None,
     query_batch: Optional[List[str]] = None,
@@ -160,10 +240,11 @@ async def brute_force_triplet_search(
     node_type: Optional[Type] = None,
     node_name: Optional[List[str]] = None,
     node_name_filter_operator: str = "OR",
-    wide_search_top_k: Optional[int] = 100,
+    wide_search_top_k: Optional[int] = None,
     triplet_distance_penalty: Optional[float] = 6.5,
     feedback_influence: float = 0.0,
     unified_engine: Optional[UnifiedStoreEngine] = None,
+    debug_collector: Optional[list] = None,
 ) -> Union[List[Edge], List[List[Edge]]]:
     """
     Performs a brute force search to retrieve the top triplets from the graph.
@@ -208,9 +289,13 @@ async def brute_force_triplet_search(
             "cognee.retrieval.mode", "batch" if query_batch is not None else "single"
         )
 
+        # Resolve wide_search_top_k: caller may pass None to use the configured default
+        resolved_top_k = wide_search_top_k if wide_search_top_k is not None \
+            else get_retrieval_config().vector_search_top_k
+
         query_list_length = len(query_batch) if query_batch is not None else None
         wide_search_limit = (
-            None if query_list_length else (wide_search_top_k if node_name is None else None)
+            None if query_list_length else (resolved_top_k if node_name is None else None)
         )
 
         if collections is None:
@@ -233,6 +318,8 @@ async def brute_force_triplet_search(
 
             vector_search = NodeEdgeVectorSearch(vector_engine=vector_engine)
 
+            # ── Phase 1: multi-collection vector search ───────────────────────
+            t_vec = time.monotonic()
             await vector_search.embed_and_retrieve_distances(
                 query=None if query_list_length else query,
                 query_batch=query_batch if query_list_length else None,
@@ -240,7 +327,10 @@ async def brute_force_triplet_search(
                 wide_search_limit=wide_search_limit,
                 node_name=node_name,
                 node_name_filter_operator=node_name_filter_operator,
+                # Fetch full payloads only when debug tracing is active (no production cost)
+                include_payload=debug_collector is not None,
             )
+            vec_duration_ms = int((time.monotonic() - t_vec) * 1000)
 
             if query_batch is not None:
                 otel_span.set_attribute("cognee.retrieval.batch_size", len(query_batch))
@@ -248,8 +338,32 @@ async def brute_force_triplet_search(
             if not vector_search.has_results():
                 otel_span.set_attribute(COGNEE_VECTOR_RESULT_COUNT, 0)
                 otel_span.set_attribute(COGNEE_RESULT_SUMMARY, "No vector results found")
+                if debug_collector is not None:
+                    debug_collector.append({
+                        "name": "vector_search",
+                        "label": "Multi-Collection Vector Search",
+                        "duration_ms": vec_duration_ms,
+                        "result_count": 0,
+                        "result_items": [
+                            f"Searched {len(collections)} collection(s) — no results found"
+                        ],
+                        "status": "success",
+                    })
                 return [[] for _ in range(query_list_length)] if query_list_length else []
 
+            if debug_collector is not None:
+                total_hits, vec_items = _count_vector_hits(vector_search)
+                debug_collector.append({
+                    "name": "vector_search",
+                    "label": "Multi-Collection Vector Search",
+                    "duration_ms": vec_duration_ms,
+                    "result_count": total_hits,
+                    "result_items": vec_items,
+                    "status": "success",
+                })
+
+            # ── Phase 2: score fusion + triplet ranking ───────────────────────
+            t_fusion = time.monotonic()
             results = await _get_top_triplet_importances(
                 memory_fragment,
                 vector_search,
@@ -264,6 +378,7 @@ async def brute_force_triplet_search(
                 query_list_length=query_list_length,
                 graph_engine=graph_engine,
             )
+            fusion_duration_ms = int((time.monotonic() - t_fusion) * 1000)
 
             result_count = sum(len(r) for r in results) if query_list_length else len(results)
             otel_span.set_attribute(COGNEE_VECTOR_RESULT_COUNT, result_count)
@@ -271,6 +386,21 @@ async def brute_force_triplet_search(
                 COGNEE_RESULT_SUMMARY,
                 f"Found {result_count} triplet(s) from {len(collections)} collection(s)",
             )
+
+            if debug_collector is not None:
+                flat = (
+                    [edge for batch in results for edge in batch]
+                    if query_list_length
+                    else results
+                )
+                debug_collector.append({
+                    "name": "score_fusion",
+                    "label": "Score Fusion & Triplet Ranking",
+                    "duration_ms": fusion_duration_ms,
+                    "result_count": result_count,
+                    "result_items": serialize_items(flat),
+                    "status": "success",
+                })
 
             return results
         except CollectionNotFoundError:

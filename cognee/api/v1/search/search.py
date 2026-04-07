@@ -38,7 +38,7 @@ async def search(
     node_name_filter_operator: str = "OR",
     only_context: bool = False,
     session_id: Optional[str] = None,
-    wide_search_top_k: Optional[int] = 100,
+    wide_search_top_k: Optional[int] = None,
     triplet_distance_penalty: Optional[float] = 6.5,
     feedback_influence: float = 0.0,
     verbose: bool = False,
@@ -220,7 +220,7 @@ async def search(
         await set_session_user_context_variable(user)
 
         # Transform string based datasets to UUID - String based datasets can only be found for current user
-        if datasets is not None and [all(isinstance(dataset, str) for dataset in datasets)]:
+        if datasets is not None and all(isinstance(dataset, str) for dataset in datasets):
             datasets = await get_authorized_existing_datasets(datasets, "read", user)
             datasets = [dataset.id for dataset in datasets]
             if not datasets:

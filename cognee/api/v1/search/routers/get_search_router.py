@@ -10,7 +10,7 @@ from cognee.modules.search.types import SearchType, SearchResult
 from cognee.api.DTO import InDTO, OutDTO
 from cognee.modules.users.exceptions.exceptions import PermissionDeniedError, UserNotFoundError
 from cognee.modules.users.models import User
-from cognee.modules.search.operations import get_history
+from cognee.modules.search.operations import get_history, get_search_traces, delete_search_traces
 from cognee.modules.users.methods import get_authenticated_user
 from cognee.shared.utils import send_telemetry
 from cognee.shared.usage_logger import log_usage
@@ -43,6 +43,40 @@ def get_search_router() -> APIRouter:
         text: str
         user: str
         created_at: datetime
+
+    @router.get("/debug", response_model=list)
+    async def get_search_debug_traces(
+        limit: int = 10,
+        user: User = Depends(get_authenticated_user),
+    ):
+        """
+        Return the last *limit* retrieval traces for the authenticated user.
+
+        Each trace contains:
+        - **query_text** – the original search query
+        - **search_type** – e.g. GRAPH_COMPLETION, SUMMARIES
+        - **dataset_name** – which dataset was searched
+        - **total_duration_ms** – wall-clock time for the whole search
+        - **steps** – ordered list of pipeline steps with per-step duration,
+          result count and a short result preview
+        - **created_at** – ISO timestamp
+
+        Useful for debugging and visualising the retrieval pipeline.
+        """
+        try:
+            traces = await get_search_traces(user.id, limit=min(limit, 50))
+            return jsonable_encoder(traces)
+        except Exception as error:
+            return JSONResponse(status_code=500, content={"error": str(error)})
+
+    @router.delete("/debug", response_model=dict)
+    async def clear_search_debug_traces(user: User = Depends(get_authenticated_user)):
+        """Delete all retrieval traces for the authenticated user."""
+        try:
+            deleted = await delete_search_traces(user.id)
+            return {"deleted": deleted}
+        except Exception as error:
+            return JSONResponse(status_code=500, content={"error": str(error)})
 
     @router.get("", response_model=list[SearchHistoryItem])
     async def get_search_history(user: User = Depends(get_authenticated_user)):

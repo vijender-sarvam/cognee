@@ -1,2 +1,6 @@
-The question is: `{{ question }}`
-and here is the context provided with a set of relationships from a knowledge graph separated by \n---\n each represented as node1 -- relation -- node2 triplet: `{{ context }}`
+Use ONLY the context below to answer the question. Do NOT use any outside knowledge. If the answer is not present in the context, respond with exactly: "I don't have enough information to answer this."
+
+Context (knowledge graph relationships, each as node1 -- relation -- node2):
+{{ context }}
+
+Question: {{ question }}

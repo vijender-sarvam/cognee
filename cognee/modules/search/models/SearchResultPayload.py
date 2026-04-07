@@ -26,6 +26,9 @@ class SearchResultPayload(BaseModel):
     dataset_id: Optional[UUID] = None
     dataset_tenant_id: Optional[UUID] = None
 
+    # Step-by-step retrieval trace captured by get_retriever_output
+    steps: Optional[List[dict]] = None
+
     @field_serializer("result_object")
     def serialize_complex_types(self, v: Any):
         """

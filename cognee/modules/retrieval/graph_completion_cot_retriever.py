@@ -62,7 +62,7 @@ class GraphCompletionCotRetriever(GraphCompletionRetriever):
         node_type: Optional[Type] = None,
         node_name: Optional[List[str]] = None,
         node_name_filter_operator: str = "OR",
-        wide_search_top_k: Optional[int] = 100,
+        wide_search_top_k: Optional[int] = None,
         triplet_distance_penalty: Optional[float] = 6.5,
         feedback_influence: float = 0.0,
         max_iter: int = 4,

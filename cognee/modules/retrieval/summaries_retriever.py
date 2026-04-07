@@ -82,8 +82,8 @@ class SummariesRetriever(BaseRetriever):
               empty string if none are found.
         """
         if retrieved_objects:
-            summary_payload_texts = [summary.payload["text"] for summary in retrieved_objects]
-            return "\n".join(summary_payload_texts)
+            summary_payload_texts = [summary.payload.get("text", "") for summary in retrieved_objects]
+            return "\n".join(filter(None, summary_payload_texts))
         else:
             return ""
 

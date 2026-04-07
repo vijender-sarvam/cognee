@@ -59,6 +59,7 @@ export default function Header({ user }: HeaderProps) {
         </div>
 
         <div className="flex flex-row items-center gap-2.5">
+          <Link href="/graph" className="!text-indigo-600 pl-4 pr-4">Graph</Link>
           <Link href="/mcp-status" className="!text-indigo-600 pl-4 pr-4">
             <StatusDot className="mr-2" isActive={isMCPConnected} />
             { isMCPConnected ? "MCP connected" : "MCP disconnected" }

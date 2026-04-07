@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useEffect } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 
 import { SearchView } from "@/ui/Partials";
 import { LoadingIndicator } from "@/ui/App";
@@ -114,7 +114,10 @@ export default function CogneeAddWidget({ onData, useCloud = false }: CogneeAddW
     setFalse: closeSearchModal,
   } = useBoolean(false);
 
-  const handleSearchClick = () => {
+  const [searchDataset, setSearchDataset] = useState<Dataset | null>(null);
+
+  const handleSearchClick = (dataset: Dataset) => {
+    setSearchDataset(dataset);
     openSearchModal();
   };
 
@@ -134,7 +137,7 @@ export default function CogneeAddWidget({ onData, useCloud = false }: CogneeAddW
                 {isProcessingFiles && <LoadingIndicator />}
               </span>
             </CTAButton>
-            <NeutralButton onClick={handleSearchClick} type="button">
+            <NeutralButton onClick={() => handleSearchClick(dataset)} type="button">
               <SearchIcon />
             </NeutralButton>
           </div>
@@ -153,7 +156,7 @@ export default function CogneeAddWidget({ onData, useCloud = false }: CogneeAddW
           <GhostButton onClick={closeSearchModal} className="absolute right-2 top-2">
             <AddIcon className="rotate-45" />
           </GhostButton>
-          <SearchView />
+          <SearchView dataset={searchDataset ?? undefined} />
         </div>
       </Modal>
     </div>

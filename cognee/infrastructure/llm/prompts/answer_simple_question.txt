@@ -1,1 +1,1 @@
-Answer the question using the provided context. Be as brief as possible.
+Answer the question ONLY using the provided context. Do not use any knowledge outside the provided context. If the answer cannot be found in the context, respond with "I don't have enough information to answer this." Be as brief as possible.

@@ -36,8 +36,14 @@ class NodeEdgeVectorSearch:
         wide_search_limit: Optional[int] = None,
         node_name: Optional[List[str]] = None,
         node_name_filter_operator: str = "OR",
+        include_payload: bool = False,
     ):
-        """Embeds query/queries and retrieves vector distances from all collections."""
+        """Embeds query/queries and retrieves vector distances from all collections.
+
+        Args:
+            include_payload: When True, each ScoredResult will carry its full payload dict.
+                             Defaults to False for performance; set True when debug tracing is active.
+        """
         if query is not None and query_batch is not None:
             raise ValueError("Cannot provide both 'query' and 'query_batch'; use exactly one.")
         if query is None and query_batch is None:
@@ -63,7 +69,8 @@ class NodeEdgeVectorSearch:
             else:
                 self.query_list_length = None
                 search_results = await self._run_single_search(
-                    collections, query, wide_search_limit, node_name, node_name_filter_operator
+                    collections, query, wide_search_limit, node_name,
+                    node_name_filter_operator, include_payload,
                 )
 
             elapsed_time = time.time() - start_time
@@ -164,6 +171,7 @@ class NodeEdgeVectorSearch:
         wide_search_limit: Optional[int],
         node_name: Optional[List[str]],
         node_name_filter_operator: str,
+        include_payload: bool = False,
     ) -> List[List[Any]]:
         """Runs single query search and returns flat lists per collection.
 
@@ -178,6 +186,7 @@ class NodeEdgeVectorSearch:
                 collection,
                 node_name,
                 node_name_filter_operator,
+                include_payload,
             )
             for collection in collections
         ]
@@ -199,6 +208,7 @@ class NodeEdgeVectorSearch:
         collection_name: str,
         node_name: Optional[List[str]],
         node_name_filter_operator: str,
+        include_payload: bool = False,
     ):
         """Searches one collection and returns results or empty list if not found."""
         try:
@@ -208,6 +218,7 @@ class NodeEdgeVectorSearch:
                 limit=wide_search_limit,
                 node_name=node_name,
                 node_name_filter_operator=node_name_filter_operator,
+                include_payload=include_payload,
             )
         except CollectionNotFoundError:
             return []

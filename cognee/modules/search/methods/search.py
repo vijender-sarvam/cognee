@@ -1,4 +1,5 @@
 import json
+import time
 import asyncio
 from uuid import UUID
 from fastapi.encoders import jsonable_encoder
@@ -18,7 +19,7 @@ from cognee.modules.search.types import (
     SearchResult,
     SearchType,
 )
-from cognee.modules.search.operations import log_query, log_result
+from cognee.modules.search.operations import log_query, log_result, log_search_trace
 from cognee.modules.users.models import User
 from cognee.modules.data.models import Dataset
 from cognee.modules.data.methods.get_authorized_existing_datasets import (
@@ -48,7 +49,7 @@ async def search(
     node_name_filter_operator: str = "OR",
     only_context: bool = False,
     session_id: Optional[str] = None,
-    wide_search_top_k: Optional[int] = 100,
+    wide_search_top_k: Optional[int] = None,
     triplet_distance_penalty: Optional[float] = 6.5,
     feedback_influence: float = 0.0,
     verbose=False,
@@ -78,6 +79,8 @@ async def search(
             "tenant_id": str(user.tenant_id) if user.tenant_id else "Single User Tenant",
         },
     )
+
+    search_start = time.monotonic()
 
     with new_span("cognee.search.authorize") as span:
         span.set_attribute(COGNEE_SEARCH_TYPE, query_type.value)
@@ -109,6 +112,8 @@ async def search(
 
         span.set_attribute("cognee.search.result_count", len(search_results))
 
+    total_duration_ms = int((time.monotonic() - search_start) * 1000)
+
     send_telemetry(
         "cognee.search EXECUTION COMPLETED",
         user.id,
@@ -123,6 +128,22 @@ async def search(
         json.dumps(jsonable_encoder(search_results)),
         user.id,
     )
+
+    # Persist per-dataset retrieval traces for the debug UI
+    for search_result in search_results:
+        if getattr(search_result, "steps", None):
+            try:
+                await log_search_trace(
+                    query_id=query.id,
+                    user_id=user.id,
+                    query_text=query_text,
+                    search_type=query_type.value,
+                    dataset_name=getattr(search_result, "dataset_name", None),
+                    total_duration_ms=total_duration_ms,
+                    steps=search_result.steps,
+                )
+            except Exception:
+                logger.warning("Failed to save search trace — continuing without it.")
 
     return _backwards_compatible_search_results(search_results, verbose)
 
@@ -140,7 +161,7 @@ async def authorized_search(
     node_name_filter_operator: str = "OR",
     only_context: bool = False,
     session_id: Optional[str] = None,
-    wide_search_top_k: Optional[int] = 100,
+    wide_search_top_k: Optional[int] = None,
     triplet_distance_penalty: Optional[float] = 6.5,
     feedback_influence: float = 0.0,
     retriever_specific_config: Optional[dict] = None,
@@ -188,7 +209,7 @@ async def search_in_datasets_context(
     node_name_filter_operator: str = "OR",
     only_context: bool = False,
     session_id: Optional[str] = None,
-    wide_search_top_k: Optional[int] = 100,
+    wide_search_top_k: Optional[int] = None,
     triplet_distance_penalty: Optional[float] = 6.5,
     feedback_influence: float = 0.0,
     retriever_specific_config: Optional[dict] = None,
@@ -210,7 +231,7 @@ async def search_in_datasets_context(
         node_name_filter_operator: str = "OR",
         only_context: bool = False,
         session_id: Optional[str] = None,
-        wide_search_top_k: Optional[int] = 100,
+        wide_search_top_k: Optional[int] = None,
         triplet_distance_penalty: Optional[float] = 6.5,
         feedback_influence: float = 0.0,
         retriever_specific_config: Optional[dict] = None,

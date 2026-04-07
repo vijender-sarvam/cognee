@@ -115,6 +115,20 @@ services:
     networks:
       - cognee-network
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: always
+    profiles:
+      - qdrant
+    ports:
+      - "6333:6333"   # HTTP / gRPC REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - cognee-network
+
   chromadb:
     image: chromadb/chroma:0.6.3
     container_name: chromadb
@@ -182,3 +196,4 @@ volumes:
   chromadb_data:
   postgres_data:
   redis_data:
+  qdrant_data:

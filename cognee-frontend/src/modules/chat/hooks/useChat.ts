@@ -14,7 +14,7 @@ const fetchMessages = () => {
     .then(response => response.json());
 };
 
-const sendMessage = (message: string, searchType: string, topK: number) => {
+const sendMessage = (datasetName: string | null, message: string, searchType: string, topK: number) => {
   return fetch("/v1/search/", {
     method: "POST",
     headers: {
@@ -23,15 +23,13 @@ const sendMessage = (message: string, searchType: string, topK: number) => {
     body: JSON.stringify({
       query: message,
       searchType,
-      datasets: ["main_dataset"],
+      ...(datasetName ? { datasets: [datasetName] } : {}),
       top_k: topK,
     }),
   })
     .then(response => response.json());
 };
 
-// Will be used in the future.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export default function useChat(dataset: Dataset) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
@@ -60,7 +58,8 @@ export default function useChat(dataset: Dataset) {
 
     disableSearchRun();
 
-    return sendMessage(message, searchType, topK)
+    const datasetName = dataset.name || null;
+    return sendMessage(datasetName, message, searchType, topK)
       .then(newMessages => {
         setMessages((messages) => [
           ...messages,
@@ -71,14 +70,24 @@ export default function useChat(dataset: Dataset) {
           })),
         ]);
       })
-      .catch(() => {
-        setMessages(
-          (messages) => messages.filter(message => message.id !== sentMessageId),
-        );
-        throw new Error("Failed to send message. Please try again. If the issue persists, please contact support.")
+      .catch((error: { detail?: string; hint?: string; error?: string } | undefined) => {
+        setMessages((messages) => {
+          const withoutSent = messages.filter(msg => msg.id !== sentMessageId);
+          const serverDetail = error?.detail || error?.error;
+          const serverHint = error?.hint;
+          const errorText = serverDetail
+            ? `${serverDetail}${serverHint ? `\n\nHint: ${serverHint}` : ""}`
+            : "Failed to send message. Please try again. If the issue persists, please contact support.";
+          return [
+            ...withoutSent,
+            { id: v4(), user: "system", text: errorText },
+          ];
+        });
       })
       .finally(() => enableSearchRun());
-  }, [disableSearchRun, enableSearchRun]);
+  // dataset.name must be in deps so the latest selected dataset is captured
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disableSearchRun, enableSearchRun, dataset.name]);
 
   return {
     messages,
@@ -91,17 +100,36 @@ export default function useChat(dataset: Dataset) {
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function convertToSearchTypeOutput(systemMessage: any[] | any, searchType: string): string {
-  if (Array.isArray(systemMessage) && systemMessage.length === 1 && typeof(systemMessage[0]) === "string") {
+function convertToSearchTypeOutput(systemMessage: any, searchType: string): string {
+  // Access-control mode: each item is { dataset_id, dataset_name, dataset_tenant_id, search_result: <payload> }
+  if (
+    systemMessage &&
+    typeof systemMessage === "object" &&
+    !Array.isArray(systemMessage) &&
+    "search_result" in systemMessage
+  ) {
+    return convertToSearchTypeOutput(systemMessage.search_result, searchType);
+  }
+
+  // Legacy non-AC mode for completion types: single-element array containing the answer string
+  if (Array.isArray(systemMessage) && systemMessage.length === 1 && typeof systemMessage[0] === "string") {
     return systemMessage[0];
   }
 
   switch (searchType) {
     case "SUMMARIES":
-      return systemMessage.map((message: { text: string }) => message.text).join("\n");
     case "CHUNKS":
-      return systemMessage.map((message: { text: string }) => message.text).join("\n");
+      if (Array.isArray(systemMessage)) {
+        return systemMessage.map((m: { text?: string }) => m.text ?? "").join("\n");
+      }
+      // Non-AC mode: single payload object per map iteration
+      if (typeof systemMessage === "object" && systemMessage !== null) {
+        return systemMessage.text ?? JSON.stringify(systemMessage);
+      }
+      return String(systemMessage ?? "");
     default:
-      return systemMessage;
+      if (typeof systemMessage === "string") return systemMessage;
+      if (Array.isArray(systemMessage)) return systemMessage.join("\n");
+      return JSON.stringify(systemMessage);
   }
 }

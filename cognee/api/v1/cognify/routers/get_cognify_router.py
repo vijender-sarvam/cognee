@@ -55,6 +55,11 @@ class CognifyPayloadDTO(InDTO):
         description="Number of chunks to process per task batch in Cognify (overrides default).",
         examples=[10, 20, 50, 100],
     )
+    chunk_size: Optional[int] = Field(
+        default=None,
+        description="Maximum tokens per chunk. Smaller values (256-512) give finer-grained graphs. Defaults to min(embedding_max_tokens, llm_context/2).",
+        examples=[256, 512, 768, 1024],
+    )
 
 
 def get_cognify_router() -> APIRouter:
@@ -164,6 +169,7 @@ def get_cognify_router() -> APIRouter:
                 run_in_background=payload.run_in_background,
                 custom_prompt=payload.custom_prompt,
                 chunks_per_batch=payload.chunks_per_batch,
+                chunk_size=payload.chunk_size,
             )
 
             # If any cognify run errored return JSONResponse with proper error status code

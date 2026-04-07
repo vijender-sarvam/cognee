@@ -4,6 +4,9 @@ from typing import Any, List, Optional, Tuple, Type
 from cognee.infrastructure.llm.LLMGateway import LLMGateway
 from cognee.infrastructure.llm.prompts import render_prompt, read_query_prompt
 from cognee.modules.observability import new_span, COGNEE_RESULT_SUMMARY
+from cognee.shared.logging_utils import get_logger
+
+logger = get_logger("completion")
 
 
 async def generate_completion(
@@ -23,6 +26,10 @@ async def generate_completion(
     if conversation_history:
         system_prompt = conversation_history + "\nTASK:" + system_prompt
 
+    logger.info("=== LLM COMPLETION REQUEST ===")
+    logger.info("SYSTEM PROMPT:\n%s", system_prompt)
+    logger.info("USER PROMPT:\n%s", user_prompt)
+
     with new_span("cognee.llm.completion") as span:
         span.set_attribute("cognee.llm.prompt_path", system_prompt_path)
         span.set_attribute("cognee.llm.context_length", len(context))
@@ -35,7 +42,11 @@ async def generate_completion(
         if isinstance(result, str):
             span.set_attribute("cognee.llm.response_length", len(result))
         span.set_attribute(COGNEE_RESULT_SUMMARY, "LLM completion generated")
-        return result
+
+    logger.info("=== LLM COMPLETION RESPONSE ===")
+    logger.info("RESPONSE:\n%s", result)
+
+    return result
 
 
 async def generate_completion_batch(

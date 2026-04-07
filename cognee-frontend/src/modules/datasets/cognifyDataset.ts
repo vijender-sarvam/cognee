@@ -7,7 +7,7 @@ import { Dataset } from "../ingestion/useDatasets";
 //   edges: { source: string; target: string; label: string }[];
 // }
 
-export default async function cognifyDataset(dataset: Dataset, useCloud: boolean = false) {
+export default async function cognifyDataset(dataset: Dataset, useCloud: boolean = false, chunkSize?: number) {
   // const data = await (
   return fetch("/v1/cognify", {
     method: "POST",
@@ -17,6 +17,7 @@ export default async function cognifyDataset(dataset: Dataset, useCloud: boolean
     body: JSON.stringify({
       datasetIds: [dataset.id],
       runInBackground: false,
+      ...(chunkSize ? { chunk_size: chunkSize } : {}),
     }),
   }, useCloud)
   .then((response) => response.json());

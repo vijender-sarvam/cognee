@@ -43,7 +43,7 @@ class GraphCompletionRetriever(BaseRetriever):
         node_type: Optional[Type] = None,
         node_name: Optional[List[str]] = None,
         node_name_filter_operator: str = "OR",
-        wide_search_top_k: Optional[int] = 100,
+        wide_search_top_k: Optional[int] = None,
         triplet_distance_penalty: Optional[float] = 6.5,
         feedback_influence: float = 0.0,
         session_id: Optional[str] = None,
@@ -158,6 +158,8 @@ class GraphCompletionRetriever(BaseRetriever):
         """
         collections = self._get_vector_index_collections()
         unified_engine = getattr(self, "_unified_engine", None)
+        # Initialise the debug sub-step collector so get_retriever_output can pick it up.
+        self._debug_sub_steps: list = []
         return await brute_force_triplet_search(
             query,
             query_batch,
@@ -170,6 +172,7 @@ class GraphCompletionRetriever(BaseRetriever):
             triplet_distance_penalty=self.triplet_distance_penalty,
             feedback_influence=self.feedback_influence,
             unified_engine=unified_engine,
+            debug_collector=self._debug_sub_steps,
         )
 
     async def get_context_from_objects(
