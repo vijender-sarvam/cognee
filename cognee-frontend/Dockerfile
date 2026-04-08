@@ -7,8 +7,8 @@ WORKDIR /app
 # Copy package.json and package-lock.json to the working directory
 COPY package.json package-lock.json ./
 
-# Install any needed packages specified in package.json
-RUN npm ci
+# Install deps + force the correct lightningcss platform binary
+RUN npm install --prefer-offline && npm install lightningcss-linux-x64-gnu
 
 # Copy the rest of the application code to the working directory
 COPY src ./src
