@@ -196,6 +196,73 @@ class CogneeClient:
                 )
                 return results
 
+    async def retrieve_chunks(
+        self,
+        query_text: str,
+        top_k: int = 10,
+        datasets: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve document chunks via vector similarity search.
+
+        Returns structured chunk data (text, score, id) without LLM completion.
+
+        Parameters
+        ----------
+        query_text : str
+            The search query for semantic similarity matching.
+        top_k : int
+            Maximum number of chunks to return.
+        datasets : List[str], optional
+            Datasets to search within.
+
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of chunk dicts with keys: text, score, id, chunk_index, document_id.
+        """
+        if self.use_api:
+            endpoint = f"{self.api_url}/api/v1/search"
+            payload = {"query": query_text, "search_type": "CHUNKS", "top_k": top_k}
+            if datasets:
+                payload["datasets"] = datasets
+
+            response = await self.client.post(endpoint, json=payload, headers=self._get_headers())
+            response.raise_for_status()
+            raw = response.json()
+            if isinstance(raw, list):
+                return self._normalize_chunk_results(raw)
+            return raw
+        else:
+            from cognee.modules.search.types import SearchType
+
+            with redirect_stdout(sys.stderr):
+                results = await self.cognee.search(
+                    query_type=SearchType.CHUNKS, query_text=query_text, top_k=top_k
+                )
+                return self._normalize_chunk_results(results)
+
+    @staticmethod
+    def _normalize_chunk_results(results: Any) -> List[Dict[str, Any]]:
+        """Normalize chunk results into a consistent list of dicts."""
+        if not results:
+            return []
+
+        chunks = []
+        for item in results:
+            if isinstance(item, dict):
+                chunks.append(
+                    {
+                        "text": item.get("text", ""),
+                        "chunk_index": item.get("chunk_index"),
+                        "document_id": str(item.get("document_id", "")),
+                        "word_count": item.get("word_count"),
+                    }
+                )
+            else:
+                chunks.append({"text": str(item)})
+        return chunks
+
     async def delete(self, data_id: UUID, dataset_id: UUID, mode: str = "soft") -> Dict[str, Any]:
         """
         Delete data from a dataset.

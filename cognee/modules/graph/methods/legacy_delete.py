@@ -17,8 +17,12 @@ logger = get_logger()
 async def legacy_delete(data: Data, mode: str = "soft"):
     """Delete a single document by its content hash."""
 
-    # Delete from graph database
-    deleted_node_ids = await delete_document_subgraph(data.id, mode)
+    # Delete from graph database (may not exist if cognify hasn't run yet)
+    try:
+        deleted_node_ids = await delete_document_subgraph(data.id, mode)
+    except DocumentSubgraphNotFoundError:
+        logger.info("No graph subgraph found for data %s, skipping graph cleanup", data.id)
+        deleted_node_ids = []
 
     # Delete from vector database
     vector_engine = get_vector_engine()
@@ -44,11 +48,11 @@ async def legacy_delete(data: Data, mode: str = "soft"):
         ]
 
     # Delete records from each vector collection that exists
-    for collection in vector_collections:
-        if await vector_engine.has_collection(collection):
-            await vector_engine.delete_data_points(
-                collection, [str(node_id) for node_id in deleted_node_ids]
-            )
+    data_point_ids = [str(node_id) for node_id in deleted_node_ids]
+    if data_point_ids:
+        for collection in vector_collections:
+            if await vector_engine.has_collection(collection):
+                await vector_engine.delete_data_points(collection, data_point_ids)
 
 
 async def delete_document_subgraph(document_id: UUID, mode: str = "soft"):

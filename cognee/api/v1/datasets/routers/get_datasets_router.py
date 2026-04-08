@@ -408,6 +408,46 @@ def get_datasets_router() -> APIRouter:
         except Exception as error:
             return JSONResponse(status_code=409, content={"error": str(error)})
 
+    @router.get("/pipeline-runs")
+    async def list_pipeline_runs(
+        limit: int = Query(default=50, le=200),
+        user: User = Depends(get_authenticated_user),
+    ):
+        """Return recent pipeline runs (newest first) for all datasets the user can access.
+
+        Each entry is one dataset with its latest status and per-file progress.
+        """
+        from cognee.modules.pipelines.operations.list_pipeline_runs import (
+            list_pipeline_runs as _list_runs,
+        )
+        from cognee.modules.pipelines.operations.get_dataset_file_progress import (
+            get_dataset_file_progress,
+        )
+
+        all_datasets = await get_all_user_permission_datasets(user, "read")
+        dataset_ids = [ds.id for ds in all_datasets]
+        if not dataset_ids:
+            return []
+
+        dataset_name_map = {str(ds.id): ds.name for ds in all_datasets}
+        runs = await _list_runs(dataset_ids, limit=limit)
+
+        run_dataset_ids = [r.dataset_id for r in runs]
+        progress = await get_dataset_file_progress(run_dataset_ids)
+
+        return [
+            {
+                "id": str(r.id),
+                "pipeline_run_id": str(r.pipeline_run_id),
+                "dataset_id": str(r.dataset_id),
+                "dataset_name": dataset_name_map.get(str(r.dataset_id), ""),
+                "status": r.status.value if r.status else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                **progress.get(str(r.dataset_id), {"total_files": 0, "completed_files": 0}),
+            }
+            for r in runs
+        ]
+
     @router.get("/{dataset_id}/data/{data_id}/raw", response_class=FileResponse)
     async def get_raw_data(
         dataset_id: UUID, data_id: UUID, user: User = Depends(get_authenticated_user)

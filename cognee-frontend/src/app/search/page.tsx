@@ -37,14 +37,12 @@ const SendIcon = () => (
   </svg>
 );
 
-// ── Search type options ────────────────────────────────────────────────────────
+// ── Search mode labels ─────────────────────────────────────────────────────────
 
-const SEARCH_TYPES = [
-  { value: "GRAPH_COMPLETION",  label: "GraphRAG",   desc: "Graph traversal + LLM"     },
-  { value: "RAG_COMPLETION",    label: "RAG",         desc: "Vector similarity + LLM"  },
-  { value: "SUMMARIES",         label: "Summaries",   desc: "Pre-computed summaries"   },
-  { value: "CHUNKS",            label: "Chunks",      desc: "Raw text chunks"           },
-];
+const MODE_LABEL: Record<string, string> = {
+  CHUNKS: "Vector search",
+  RAG_COMPLETION: "Vector search + LLM",
+};
 
 // ── Placeholder dataset for useChat (name drives the API call) ─────────────────
 
@@ -57,7 +55,8 @@ export default function SearchPage() {
   useEffect(() => { refreshDatasets(); }, [refreshDatasets]);
 
   const [selectedDataset, setSelectedDataset] = useState<Dataset | null>(null);
-  const [searchType, setSearchType]           = useState("GRAPH_COMPLETION");
+  const [useLLM, setUseLLM]                   = useState(false);
+  const searchType                             = useLLM ? "RAG_COMPLETION" : "CHUNKS";
   const [query, setQuery]                     = useState("");
   const messagesEndRef                        = useRef<HTMLDivElement>(null);
 
@@ -130,24 +129,29 @@ export default function SearchPage() {
           </div>
 
           <div className="px-4 pt-4 pb-3">
-            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Search mode</p>
-            <div className="space-y-1">
-              {SEARCH_TYPES.map((t) => (
-                <button
-                  key={t.value}
-                  onClick={() => setSearchType(t.value)}
-                  className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
-                    searchType === t.value
-                      ? "bg-indigo-50 border border-indigo-200"
-                      : "hover:bg-gray-50 border border-transparent"
-                  }`}
-                >
-                  <div className={`text-xs font-semibold ${searchType === t.value ? "text-indigo-700" : "text-gray-700"}`}>
-                    {t.label}
-                  </div>
-                  <div className="text-[10px] text-gray-400 mt-0.5">{t.desc}</div>
-                </button>
-              ))}
+            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Options</p>
+            <div className="flex items-center gap-3 px-1">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={useLLM}
+                onClick={() => setUseLLM((v) => !v)}
+                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer ${
+                  useLLM ? "bg-indigo-600" : "bg-gray-200"
+                }`}
+              >
+                <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                  useLLM ? "translate-x-4" : "translate-x-0"
+                }`} />
+              </button>
+              <div>
+                <span className="text-xs font-semibold text-gray-600">Use LLM</span>
+                <p className="text-[10px] text-gray-400">
+                  {useLLM
+                    ? "Results are refined by an LLM for a natural-language answer"
+                    : "Raw vector similarity — fast, no LLM cost"}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -157,7 +161,7 @@ export default function SearchPage() {
               <div className="bg-indigo-50 rounded-xl px-3 py-2.5">
                 <p className="text-[10px] text-indigo-400 font-semibold uppercase tracking-wide">Active</p>
                 <p className="text-xs font-medium text-indigo-700 mt-0.5 truncate">{selectedDataset.name}</p>
-                <p className="text-[10px] text-indigo-500 mt-0.5">{SEARCH_TYPES.find(t => t.value === searchType)?.label}</p>
+                <p className="text-[10px] text-indigo-500 mt-0.5">{MODE_LABEL[searchType]}</p>
               </div>
             </div>
           )}
@@ -186,10 +190,10 @@ export default function SearchPage() {
                 ) : (
                   <>
                     <div>
-                      <p className="text-base font-semibold text-gray-700">Ask your knowledge graph</p>
+                      <p className="text-base font-semibold text-gray-700">Search your knowledge base</p>
                       <p className="text-sm text-gray-400 mt-1">
                         Searching <span className="font-medium text-gray-600">{selectedDataset.name}</span> using{" "}
-                        <span className="font-medium text-gray-600">{SEARCH_TYPES.find(t => t.value === searchType)?.label}</span>
+                        <span className="font-medium text-gray-600">{MODE_LABEL[searchType]}</span>
                       </p>
                     </div>
                     <div className="grid grid-cols-2 gap-2 w-full">

@@ -96,6 +96,16 @@ async def add_data_points(
             nodes.extend(result_nodes)
 
         await index_data_points(nodes, vector_engine=vec)
+
+        if user and dataset and data:
+            await upsert_nodes(
+                nodes,
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                dataset_id=dataset.id,
+                data_id=data.id,
+            )
+
         logger.info("Vector-only mode: indexed %d node(s), skipped graph writes", len(nodes))
         return data_points
 

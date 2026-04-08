@@ -153,6 +153,7 @@ DEBUG = True
                 expected_tools = {
                     "cognify",
                     "search",
+                    "retrieve",
                     "prune",
                     "cognify_status",
                     "list_data",

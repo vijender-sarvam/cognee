@@ -36,19 +36,24 @@ const FileIcon = () => (
   </svg>
 );
 
+const RefreshIcon = () => (
+  <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+  </svg>
+);
+
 // ── Status helpers ──────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: DatasetStatus }) {
+const STATUS_CONFIG: Record<string, { dot: string; bg: string; text: string; label: string }> = {
+  DATASET_PROCESSING_INITIATED: { dot: "bg-amber-400", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Queued" },
+  DATASET_PROCESSING_STARTED:   { dot: "bg-amber-400 animate-pulse", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Processing" },
+  DATASET_PROCESSING_COMPLETED: { dot: "bg-emerald-400", bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", label: "Completed" },
+  DATASET_PROCESSING_ERRORED:   { dot: "bg-red-400", bg: "bg-red-50 border-red-200", text: "text-red-700", label: "Failed" },
+};
+
+function StatusBadge({ status }: { status: string | DatasetStatus }) {
   if (!status) return null;
-
-  const config: Record<string, { dot: string; bg: string; text: string; label: string }> = {
-    DATASET_PROCESSING_INITIATED: { dot: "bg-amber-400", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Queued" },
-    DATASET_PROCESSING_STARTED:   { dot: "bg-amber-400 animate-pulse", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Processing" },
-    DATASET_PROCESSING_COMPLETED: { dot: "bg-emerald-400", bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", label: "Ready" },
-    DATASET_PROCESSING_ERRORED:   { dot: "bg-red-400", bg: "bg-red-50 border-red-200", text: "text-red-700", label: "Error" },
-  };
-
-  const c = config[status];
+  const c = STATUS_CONFIG[status];
   if (!c) return null;
 
   return (
@@ -59,86 +64,86 @@ function StatusBadge({ status }: { status: DatasetStatus }) {
   );
 }
 
+function shortId(uuid: string) {
+  return uuid.slice(0, 8);
+}
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface IngestionJob {
-  datasetId: string;
+interface PipelineRun {
+  id: string;
+  pipeline_run_id: string;
+  dataset_id: string;
+  dataset_name: string;
+  status: string;
+  created_at: string;
+  total_files: number;
+  completed_files: number;
+}
+
+interface UploadJob {
   datasetName: string;
-  step: "uploading" | "cognifying" | "done" | "error";
+  datasetId?: string;
+  step: "uploading" | "cognifying";
   files: string[];
-  error?: string;
-  vectorOnly?: boolean;
 }
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function IngestPage() {
-  const { datasets, refreshDatasets, refreshStatuses, removeDataset, getDatasetData } = useDatasets();
+  const { datasets, refreshDatasets, refreshStatuses, removeDataset, removeDatasetData, getDatasetData } = useDatasets();
 
   const initialLoadRef = useRef(false);
 
   useEffect(() => {
     if (initialLoadRef.current) return;
     initialLoadRef.current = true;
-
-    refreshDatasets().then((loadedDatasets: Dataset[]) => {
-      if (!loadedDatasets?.length) return;
-
-      const active = loadedDatasets.filter(
-        (d) =>
-          d.status === "DATASET_PROCESSING_INITIATED" ||
-          d.status === "DATASET_PROCESSING_STARTED",
-      );
-
-      if (!active.length) return;
-
-      const resumedJobs: IngestionJob[] = active.map((d) => ({
-        datasetId: d.id,
-        datasetName: d.name,
-        step: "cognifying" as const,
-        files: [],
-      }));
-
-      setJobs((prev) => [...resumedJobs, ...prev]);
-
-      for (const d of active) {
-        pollDatasetStatus(d.id, (status: DatasetProcessingStatus) => {
-          refreshStatuses();
-          if (status === "DATASET_PROCESSING_COMPLETED") {
-            setJobs((prev) =>
-              prev.map((j) =>
-                j.datasetId === d.id ? { ...j, step: "done" } : j,
-              ),
-            );
-            refreshDatasets();
-          } else if (status === "DATASET_PROCESSING_ERRORED") {
-            setJobs((prev) =>
-              prev.map((j) =>
-                j.datasetId === d.id
-                  ? { ...j, step: "error", error: "Pipeline failed on the server." }
-                  : j,
-              ),
-            );
-          }
-        });
-      }
-    });
-  }, [refreshDatasets, refreshStatuses]);
+    refreshDatasets();
+  }, [refreshDatasets]);
 
   // Upload form state
   const [datasetName, setDatasetName]     = useState("");
   const [dragOver, setDragOver]           = useState(false);
   const [pendingFiles, setPendingFiles]   = useState<File[]>([]);
-  const [jobs, setJobs]                   = useState<IngestionJob[]>([]);
+  const [uploadJobs, setUploadJobs]       = useState<UploadJob[]>([]);
   const [expanded, setExpanded]           = useState<Set<string>>(new Set());
   const [chunkSize, setChunkSize]         = useState<number | undefined>(undefined);
-  const [skipGraph, setSkipGraph]         = useState(false);
+  const skipGraph                         = true;
   const [docParser, setDocParser]         = useState<string | undefined>(undefined);
   const [availableParsers, setAvailableParsers] = useState<string[]>([]);
   const [sarvamLang, setSarvamLang]       = useState("or-IN");
   const [sarvamLangs, setSarvamLangs]     = useState<Record<string, string>>({});
   const fileInputRef                      = useRef<HTMLInputElement>(null);
 
+  // Pipeline runs (server-backed)
+  const [pipelineRuns, setPipelineRuns]   = useState<PipelineRun[]>([]);
+  const [runsLoading, setRunsLoading]     = useState(true);
+
+  const fetchPipelineRuns = useCallback(async () => {
+    try {
+      const { fetch: apiFetch } = await import("@/utils");
+      const res = await apiFetch("/v1/datasets/pipeline-runs?limit=50");
+      const runs: PipelineRun[] = await res.json();
+      setPipelineRuns(runs);
+    } catch {
+      // silently fail
+    } finally {
+      setRunsLoading(false);
+    }
+  }, []);
+
+  // Fetch parsers, languages, and pipeline runs on mount
   useEffect(() => {
     import("@/utils").then(({ fetch: apiFetch }) => {
       apiFetch("/v1/cognify/parsers")
@@ -151,14 +156,26 @@ export default function IngestPage() {
         .then((langs: Record<string, string>) => setSarvamLangs(langs))
         .catch(() => {});
     });
-  }, []);
+
+    fetchPipelineRuns();
+  }, [fetchPipelineRuns]);
+
+  // Auto-refresh pipeline runs every 5s when any run is active
+  useEffect(() => {
+    const hasActive = pipelineRuns.some(
+      (r) => r.status === "DATASET_PROCESSING_INITIATED" || r.status === "DATASET_PROCESSING_STARTED",
+    );
+    if (!hasActive && uploadJobs.length === 0) return;
+
+    const interval = setInterval(fetchPipelineRuns, 5000);
+    return () => clearInterval(interval);
+  }, [pipelineRuns, uploadJobs, fetchPipelineRuns]);
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       if (!next.has(id)) return next;
-      // Fetch data when opening
       getDatasetData(id);
       return next;
     });
@@ -181,52 +198,52 @@ export default function IngestPage() {
   const removeFile = (name: string) =>
     setPendingFiles((prev) => prev.filter((f) => f.name !== name));
 
-  // Run ingestion — upload is synchronous, cognify fires in background then polls for status
+  // Run ingestion
   const handleIngest = useCallback(async () => {
     if (!pendingFiles.length) return;
 
     const name = datasetName.trim() || `dataset_${Date.now()}`;
+    const filesToUpload = [...pendingFiles];
 
-    const job: IngestionJob = {
-      datasetId:   "",
+    const job: UploadJob = {
       datasetName: name,
-      step:        "uploading",
-      files:       pendingFiles.map((f) => f.name),
-      vectorOnly:  skipGraph,
+      step: "uploading",
+      files: filesToUpload.map((f) => f.name),
     };
-    setJobs((prev) => [job, ...prev]);
+    setUploadJobs((prev) => [job, ...prev]);
     setPendingFiles([]);
     setDatasetName("");
 
     try {
       const dataset: Dataset = await createDataset({ name });
-      job.datasetId = dataset.id;
-      setJobs((prev) => prev.map((j) => (j.datasetName === name && j.step === "uploading" ? { ...j, datasetId: dataset.id } : j)));
+      setUploadJobs((prev) => prev.map((j) => (j.datasetName === name ? { ...j, datasetId: dataset.id } : j)));
 
-      await addData(dataset, pendingFiles.length ? pendingFiles : []);
+      await addData(dataset, filesToUpload);
+      setUploadJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "cognifying" } : j)));
 
-      setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "cognifying" } : j)));
-
-      // Fire cognify in background — returns immediately with pipeline_run_id
       const opts = docParser === "sarvam" ? { language: sarvamLang } : undefined;
       await cognifyDataset(dataset, false, chunkSize, skipGraph, docParser, opts);
       refreshStatuses();
+      fetchPipelineRuns();
 
-      // Poll server-side status until the pipeline reaches a terminal state
+      // Remove upload job — pipeline runs table takes over tracking
+      setUploadJobs((prev) => prev.filter((j) => j.datasetId !== dataset.id));
+
+      // Poll for completion to refresh datasets list
       pollDatasetStatus(dataset.id, (status: DatasetProcessingStatus) => {
+        fetchPipelineRuns();
         refreshStatuses();
-        if (status === "DATASET_PROCESSING_COMPLETED") {
-          setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "done" } : j)));
+        if (status === "DATASET_PROCESSING_COMPLETED" || status === "DATASET_PROCESSING_ERRORED") {
           refreshDatasets();
-        } else if (status === "DATASET_PROCESSING_ERRORED") {
-          setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "error", error: "Pipeline failed on the server." } : j)));
         }
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      setJobs((prev) => prev.map((j) => (j.datasetName === name ? { ...j, step: "error", error: message } : j)));
+      setUploadJobs((prev) => prev.map((j) => (j.datasetName === name ? { ...j, step: "uploading" } : j)));
+      alert(`Ingestion failed: ${message}`);
+      setUploadJobs((prev) => prev.filter((j) => j.datasetName !== name));
     }
-  }, [pendingFiles, datasetName, chunkSize, skipGraph, docParser, sarvamLang, refreshDatasets, refreshStatuses]);
+  }, [pendingFiles, datasetName, chunkSize, skipGraph, docParser, sarvamLang, refreshDatasets, refreshStatuses, fetchPipelineRuns]);
 
   // Add more files to existing dataset
   const handleAddToDataset = useCallback(
@@ -235,41 +252,45 @@ export default function IngestPage() {
       if (!files.length) return;
       e.target.value = "";
 
-      const job: IngestionJob = {
-        datasetId:   dataset.id,
+      const job: UploadJob = {
         datasetName: dataset.name,
-        step:        "uploading",
-        files:       files.map((f) => f.name),
-        vectorOnly:  skipGraph,
+        datasetId: dataset.id,
+        step: "uploading",
+        files: files.map((f) => f.name),
       };
-      setJobs((prev) => [job, ...prev]);
+      setUploadJobs((prev) => [job, ...prev]);
 
       try {
         await addData(dataset, files);
-        setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step === "uploading" ? { ...j, step: "cognifying" } : j)));
+        setUploadJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step === "uploading" ? { ...j, step: "cognifying" } : j)));
 
-        // Fire cognify in background — returns immediately
         const opts = docParser === "sarvam" ? { language: sarvamLang } : undefined;
         await cognifyDataset(dataset, false, chunkSize, skipGraph, docParser, opts);
         refreshStatuses();
+        fetchPipelineRuns();
 
-        // Poll until terminal state
+        setUploadJobs((prev) => prev.filter((j) => j.datasetId !== dataset.id));
+
         pollDatasetStatus(dataset.id, (status: DatasetProcessingStatus) => {
+          fetchPipelineRuns();
           refreshStatuses();
-          if (status === "DATASET_PROCESSING_COMPLETED") {
-            setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step === "cognifying" ? { ...j, step: "done" } : j)));
+          if (status === "DATASET_PROCESSING_COMPLETED" || status === "DATASET_PROCESSING_ERRORED") {
             refreshDatasets();
-          } else if (status === "DATASET_PROCESSING_ERRORED") {
-            setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step !== "done" ? { ...j, step: "error", error: "Pipeline failed on the server." } : j)));
           }
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
-        setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step !== "done" ? { ...j, step: "error", error: message } : j)));
+        alert(`Ingestion failed: ${message}`);
+        setUploadJobs((prev) => prev.filter((j) => j.datasetId !== dataset.id));
       }
     },
-    [chunkSize, skipGraph, docParser, sarvamLang, refreshDatasets, refreshStatuses]
+    [chunkSize, skipGraph, docParser, sarvamLang, refreshDatasets, refreshStatuses, fetchPipelineRuns],
   );
+
+  // Counts for the pipeline runs summary
+  const activeCount    = pipelineRuns.filter((r) => r.status === "DATASET_PROCESSING_STARTED" || r.status === "DATASET_PROCESSING_INITIATED").length;
+  const completedCount = pipelineRuns.filter((r) => r.status === "DATASET_PROCESSING_COMPLETED").length;
+  const failedCount    = pipelineRuns.filter((r) => r.status === "DATASET_PROCESSING_ERRORED").length;
 
   return (
     <div className="flex flex-col h-screen bg-slate-50">
@@ -278,7 +299,7 @@ export default function IngestPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-6 py-8">
           <h1 className="text-xl font-bold text-gray-900 mb-1">Ingest Data</h1>
-          <p className="text-sm text-gray-500 mb-8">Upload files, build knowledge graphs, and manage datasets.</p>
+          <p className="text-sm text-gray-500 mb-8">Upload files, store embeddings, and manage datasets.</p>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
@@ -434,97 +455,29 @@ export default function IngestPage() {
                   )}
                 </div>
 
-                {/* Skip graph toggle */}
-                <div className="mt-4 flex items-center gap-3">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={skipGraph}
-                    onClick={() => setSkipGraph((v) => !v)}
-                    className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer ${
-                      skipGraph ? "bg-indigo-600" : "bg-gray-200"
-                    }`}
-                  >
-                    <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                      skipGraph ? "translate-x-4" : "translate-x-0"
-                    }`} />
-                  </button>
-                  <div>
-                    <span className="text-xs font-semibold text-gray-600">Vector-only mode</span>
-                    <p className="text-[10px] text-gray-400">
-                      {skipGraph
-                        ? "Skips graph extraction & summarization — chunks + embeddings only (fast, no LLM cost)"
-                        : "Full pipeline — extracts entities, builds knowledge graph, and generates summaries"}
-                    </p>
-                  </div>
-                </div>
-
                 <button
                   onClick={handleIngest}
                   disabled={!pendingFiles.length}
                   className="mt-4 w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
-                  {skipGraph ? "Upload & Store Embeddings" : "Upload & Build Knowledge Graph"}
+                  Upload & Store Embeddings
                 </button>
               </div>
 
-              {/* Active jobs */}
-              {jobs.length > 0 && (
-                <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
-                  <h2 className="text-sm font-semibold text-gray-700 mb-3">Ingestion jobs</h2>
-                  <div className="space-y-3">
-                    {jobs.map((job, i) => (
-                      <div key={i} className={`rounded-xl p-3 border ${
-                        job.step === "error" ? "border-red-200 bg-red-50" :
-                        job.step === "done"  ? "border-emerald-200 bg-emerald-50" :
-                        "border-amber-200 bg-amber-50"
-                      }`}>
-                        <div className="flex items-center gap-2 mb-1">
-                          {job.step === "done" ? (
-                            <span className="text-emerald-500">
-                              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                              </svg>
-                            </span>
-                          ) : job.step === "error" ? (
-                            <span className="text-red-400">
-                              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </span>
-                          ) : (
-                            <div className="w-3.5 h-3.5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
-                          )}
-                          <span className="text-xs font-semibold text-gray-700">{job.datasetName}</span>
-                        </div>
-
-                        <p className={`text-xs ${
-                          job.step === "error" ? "text-red-600" :
-                          job.step === "done"  ? "text-emerald-700" : "text-amber-700"
-                        }`}>
-                          {job.step === "uploading"  && "Uploading files…"}
-                          {job.step === "cognifying" && (job.vectorOnly
-                            ? "Embedding chunks (vector-only)…"
-                            : "Extracting entities & building graph…")}
-                          {job.step === "done"       && `Done — ${job.files.length} file(s) ingested${job.vectorOnly ? " (vector-only)" : ""}`}
-                          {job.step === "error"      && `Error: ${job.error}`}
-                        </p>
-
-                        {/* Progress bar */}
-                        {(job.step === "uploading" || job.step === "cognifying") && (
-                          <div className="mt-2 w-full h-1 bg-amber-100 rounded-full overflow-hidden">
-                            <div className={`h-full bg-amber-400 rounded-full transition-all duration-700 animate-pulse ${
-                              job.step === "cognifying" ? "w-4/5" : "w-1/3"
-                            }`} />
-                          </div>
-                        )}
-
-                        <p className="text-[10px] text-gray-400 mt-1">
-                          {job.files.join(", ").slice(0, 80)}{job.files.join(", ").length > 80 ? "…" : ""}
+              {/* Active upload indicator */}
+              {uploadJobs.length > 0 && (
+                <div className="bg-white rounded-2xl border border-amber-200 p-4 shadow-sm">
+                  {uploadJobs.map((job, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <div className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-gray-700 truncate">{job.datasetName}</p>
+                        <p className="text-[10px] text-amber-600">
+                          {job.step === "uploading" ? "Uploading files…" : "Starting pipeline…"}
                         </p>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -576,20 +529,23 @@ export default function IngestPage() {
                         {/* Expanded files */}
                         {isOpen && (
                           <div className="border-t border-gray-100">
-                            {/* Add more files */}
-                            <label className="flex items-center gap-2 px-4 py-2 text-xs text-indigo-600 font-medium cursor-pointer hover:bg-indigo-50 transition-colors relative">
-                              <input type="file" multiple className="sr-only" onChange={(e) => handleAddToDataset(dataset, e)} />
-                              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                              </svg>
-                              Add more files
-                            </label>
-
                             {dataset.data?.length ? (
                               dataset.data.map((file) => (
                                 <div key={file.id} className="flex items-center gap-2 px-4 py-1.5 border-t border-gray-50">
                                   <span className="text-gray-400 shrink-0"><FileIcon /></span>
                                   <span className="text-xs text-gray-600 truncate flex-1">{file.name}</span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (confirm(`Delete "${file.name}" and all its embeddings?`)) {
+                                        removeDatasetData(dataset.id, file.id).then(() => getDatasetData(dataset.id));
+                                      }
+                                    }}
+                                    className="text-gray-300 hover:text-red-400 transition-colors shrink-0"
+                                    title="Delete file and embeddings"
+                                  >
+                                    <TrashIcon />
+                                  </button>
                                 </div>
                               ))
                             ) : (
@@ -604,6 +560,101 @@ export default function IngestPage() {
               )}
             </div>
           </div>
+
+          {/* ── Pipeline Runs ── */}
+          <div className="mt-8 bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <h2 className="text-sm font-semibold text-gray-700">Pipeline Runs</h2>
+                <div className="flex items-center gap-2 text-[10px]">
+                  {activeCount > 0 && (
+                    <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      {activeCount} active
+                    </span>
+                  )}
+                  {completedCount > 0 && (
+                    <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-semibold">
+                      {completedCount} completed
+                    </span>
+                  )}
+                  {failedCount > 0 && (
+                    <span className="inline-flex items-center gap-1 bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full font-semibold">
+                      {failedCount} failed
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={fetchPipelineRuns}
+                className="text-gray-400 hover:text-indigo-600 transition-colors p-1.5 rounded-lg hover:bg-gray-50"
+                title="Refresh"
+              >
+                <RefreshIcon />
+              </button>
+            </div>
+
+            {runsLoading ? (
+              <div className="text-center py-8 text-xs text-gray-400">Loading pipeline runs…</div>
+            ) : pipelineRuns.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-sm text-gray-500">No pipeline runs yet</p>
+                <p className="text-xs text-gray-400 mt-1">Upload files above to start your first ingestion</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                      <th className="text-left py-2 px-3">Dataset</th>
+                      <th className="text-left py-2 px-3">Progress</th>
+                      <th className="text-left py-2 px-3">Status</th>
+                      <th className="text-left py-2 px-3">Started</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pipelineRuns.map((run) => {
+                      const total = run.total_files || 0;
+                      const done = run.completed_files || 0;
+                      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+                      return (
+                        <tr key={run.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                          <td className="py-2.5 px-3">
+                            <span className="font-medium text-gray-700">{run.dataset_name || shortId(run.dataset_id)}</span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {total > 0 ? (
+                              <div className="flex items-center gap-2">
+                                <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-500 ${pct === 100 ? "bg-emerald-400" : "bg-indigo-400"}`}
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                                <span className="text-[10px] text-gray-500 font-medium whitespace-nowrap">
+                                  {done}/{total} files
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <StatusBadge status={run.status} />
+                          </td>
+                          <td className="py-2.5 px-3 text-gray-400" title={run.created_at}>
+                            {run.created_at ? timeAgo(run.created_at) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
         </div>
       </div>
     </div>

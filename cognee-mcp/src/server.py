@@ -637,6 +637,72 @@ async def search(search_query: str, search_type: str, top_k: int = 10) -> list:
 
 
 @mcp.tool()
+@log_usage(function_name="MCP retrieve", log_type="mcp_tool")
+async def retrieve(query: str, top_k: int = 5) -> list:
+    """
+    Retrieve relevant document chunks via vector similarity search — no LLM call.
+
+    Use this tool when you need raw context passages to ground your answers.
+    It performs a semantic search over all previously ingested and cognified data,
+    returning the most relevant text chunks ranked by similarity to the query.
+
+    This is the fastest retrieval option because it skips LLM completion entirely.
+    The returned chunks can be used directly as context for answering user questions,
+    performing analysis, or feeding into further processing.
+
+    Prerequisites:
+        - Data must have been added via the `cognify` tool (add + cognify).
+        - A vector database must be populated with document chunks.
+
+    When to use this vs. `search`:
+        - Use `retrieve` when you want raw text passages as context (no LLM overhead).
+        - Use `search` with GRAPH_COMPLETION when you need an LLM-generated answer
+          that reasons over graph structure.
+        - Use `search` with RAG_COMPLETION when you need an LLM-generated answer
+          from chunk context.
+
+    Parameters
+    ----------
+    query : str
+        Natural language query for semantic similarity matching.
+        Examples:
+        - "authentication flow for API requests"
+        - "how is user data encrypted at rest"
+        - "error handling in the payment module"
+
+    top_k : int, optional
+        Maximum number of chunks to return (default: 5).
+        - Lower (3-5): Faster, more focused context
+        - Higher (10-20): Broader coverage, more context
+
+    Returns
+    -------
+    list
+        A list containing a single TextContent object with JSON-formatted chunks.
+        Each chunk includes:
+        - text: The chunk content
+        - chunk_index: Position of the chunk in the source document
+        - document_id: ID of the source document
+        - word_count: Number of words in the chunk
+    """
+    with redirect_stdout(sys.stderr):
+        try:
+            chunks = await cognee_client.retrieve_chunks(
+                query_text=query, top_k=top_k
+            )
+        except Exception as e:
+            error_msg = f"Retrieval failed: {str(e)}"
+            logger.error(error_msg)
+            return [types.TextContent(type="text", text=error_msg)]
+
+    if not chunks:
+        return [types.TextContent(type="text", text="No matching chunks found. Ensure data has been added and cognified.")]
+
+    formatted = json.dumps(chunks, indent=2, cls=JSONEncoder)
+    return [types.TextContent(type="text", text=formatted)]
+
+
+@mcp.tool()
 @log_usage(function_name="MCP list_data", log_type="mcp_tool")
 async def list_data(dataset_id: str = None) -> list:
     """
