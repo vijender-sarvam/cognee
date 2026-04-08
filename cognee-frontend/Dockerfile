@@ -1,6 +1,9 @@
 # Use an official Node.js runtime as a parent image
 FROM node:22-alpine
 
+# lightningcss needs native compilation on musl
+RUN apk add --no-cache python3 make g++
+
 # Set the working directory to /app
 WORKDIR /app
 
@@ -9,7 +12,6 @@ COPY package.json package-lock.json ./
 
 # Install any needed packages specified in package.json
 RUN npm ci
-RUN npm rebuild lightningcss
 
 # Copy the rest of the application code to the working directory
 COPY src ./src

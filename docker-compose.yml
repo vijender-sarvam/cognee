@@ -34,8 +34,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "4.0"
-          memory: 8GB
+          cpus: "2.0"
+          memory: 4GB
 
   # Cognee MCP Server - Model Context Protocol server for IDE integration
   cognee-mcp:
