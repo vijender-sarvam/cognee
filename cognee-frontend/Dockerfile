@@ -1,8 +1,5 @@
-# Use an official Node.js runtime as a parent image
-FROM node:22-alpine
-
-# lightningcss needs native compilation on musl
-RUN apk add --no-cache python3 make g++
+# Use Debian-based Node (lightningcss needs glibc, not musl/Alpine)
+FROM node:22-slim
 
 # Set the working directory to /app
 WORKDIR /app
