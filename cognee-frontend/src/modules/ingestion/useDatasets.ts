@@ -1,60 +1,83 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetch } from '@/utils';
 import { DataFile } from './useData';
 import createDataset from "../datasets/createDataset";
 
+export type DatasetStatus =
+  | "DATASET_PROCESSING_INITIATED"
+  | "DATASET_PROCESSING_STARTED"
+  | "DATASET_PROCESSING_COMPLETED"
+  | "DATASET_PROCESSING_ERRORED"
+  | "";
+
 export interface Dataset {
   id: string;
   name: string;
   data: DataFile[];
-  status: string;
+  status: DatasetStatus;
 }
+
+const PROCESSING_STATUSES = new Set<DatasetStatus>([
+  "DATASET_PROCESSING_INITIATED",
+  "DATASET_PROCESSING_STARTED",
+]);
 
 function useDatasets(useCloud = false) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  // const statusTimeout = useRef<any>(null);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // const fetchDatasetStatuses = useCallback((datasets: Dataset[]) => {
-  //   fetch(
-  //     `/v1/datasets/status?dataset=${datasets.map(d => d.id).join('&dataset=')}`,
-  //     {
-  //       headers: {
-  //         "Content-Type": "application/json",
-  //       },
-  //     },
-  //     useCloud,
-  //   )
-  //     .then((response) => response.json())
-  //     .then((statuses) => setDatasets(
-  //       (datasets) => (
-  //         datasets.map((dataset) => ({
-  //           ...dataset,
-  //           status: statuses[dataset.id]
-  //         }))
-  //     )));
-  // }, [useCloud]);
+  const fetchDatasetStatuses = useCallback(
+    async (currentDatasets: Dataset[]) => {
+      if (!currentDatasets.length) return;
 
-  // const checkDatasetStatuses = useCallback((datasets: Dataset[]) => {
-  //   fetchDatasetStatuses(datasets);
+      const query = currentDatasets
+        .map((d) => `dataset=${encodeURIComponent(d.id)}`)
+        .join("&");
 
-  //   if (statusTimeout.current !== null) {
-  //     clearTimeout(statusTimeout.current);
-  //   }
+      try {
+        const statuses: Record<string, DatasetStatus> = await fetch(
+          `/v1/datasets/status?${query}`,
+          { headers: { "Content-Type": "application/json" } },
+          useCloud,
+        ).then((r) => r.json());
 
-  //   statusTimeout.current = setTimeout(() => {
-  //     checkDatasetStatuses(datasets);
-  //   }, 50000);
-  // }, [fetchDatasetStatuses]);
+        setDatasets((prev) =>
+          prev.map((d) => ({
+            ...d,
+            status: statuses[d.id] ?? d.status,
+          })),
+        );
 
-  // useEffect(() => {
-  //   return () => {
-  //     if (statusTimeout.current !== null) {
-  //       clearTimeout(statusTimeout.current);
-  //       statusTimeout.current = null;
-  //     }
-  //   };
-  // }, []);
+        const hasProcessing = currentDatasets.some((d) =>
+          PROCESSING_STATUSES.has(statuses[d.id]),
+        );
+
+        if (hasProcessing) {
+          statusTimerRef.current = setTimeout(
+            () => fetchDatasetStatuses(currentDatasets),
+            4000,
+          );
+        }
+      } catch {
+        // Network blip — retry after a longer delay
+        statusTimerRef.current = setTimeout(
+          () => fetchDatasetStatuses(currentDatasets),
+          8000,
+        );
+      }
+    },
+    [useCloud],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (statusTimerRef.current !== null) {
+        clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const addDataset = useCallback((datasetName: string) => {
     return createDataset({ name: datasetName  }, useCloud)
@@ -84,12 +107,12 @@ function useDatasets(useCloud = false) {
         },
       }, useCloud)
       .then((response) => response.json())
-      .then((datasets) => {
+      .then((datasets: Dataset[]) => {
         setDatasets(datasets);
 
-        // if (datasets.length > 0) {
-        //   checkDatasetStatuses(datasets);
-        // }
+        if (datasets.length > 0) {
+          fetchDatasetStatuses(datasets);
+        }
 
         return datasets;
       })
@@ -97,28 +120,25 @@ function useDatasets(useCloud = false) {
         console.error('Error fetching datasets:', error);
         throw error;
       });
-  }, [useCloud]);
+  }, [useCloud, fetchDatasetStatuses]);
+
+  const refreshStatuses = useCallback(() => {
+    setDatasets((current) => {
+      if (current.length > 0) fetchDatasetStatuses(current);
+      return current;
+    });
+  }, [fetchDatasetStatuses]);
 
   const getDatasetData = useCallback((datasetId: string) => {
     return fetch(`/v1/datasets/${datasetId}/data`, {}, useCloud)
       .then((response) => response.json())
       .then((data) => {
-        const datasetIndex = datasets.findIndex((dataset) => dataset.id === datasetId);
-
-        if (datasetIndex >= 0) {
-          setDatasets((datasets) => [
-           ...datasets.slice(0, datasetIndex),
-            {
-             ...datasets[datasetIndex],
-              data,
-            },
-           ...datasets.slice(datasetIndex + 1),
-          ]);
-        }
-
+        setDatasets((prev) =>
+          prev.map((d) => (d.id === datasetId ? { ...d, data } : d)),
+        );
         return data;
       });
-  }, [datasets, useCloud]);
+  }, [useCloud]);
 
   const removeDatasetData = useCallback((datasetId: string, dataId: string) => {
     return fetch(`/v1/datasets/${datasetId}/data/${dataId}`, {
@@ -133,7 +153,8 @@ function useDatasets(useCloud = false) {
     getDatasetData,
     removeDatasetData,
     refreshDatasets: fetchDatasets,
+    refreshStatuses,
   };
-};
+}
 
 export default useDatasets;

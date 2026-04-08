@@ -151,6 +151,7 @@ def _create_vector_engine(
             url=vector_db_url,
             api_key=vector_db_key,
             embedding_engine=embedding_engine,
+            database_name=vector_db_name or None,
         )
 
     elif vector_db_provider.lower() == "neptune_analytics":

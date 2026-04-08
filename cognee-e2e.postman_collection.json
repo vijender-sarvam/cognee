@@ -1,0 +1,702 @@
+{
+  "info": {
+    "name": "Cognee — End-to-End Flow",
+    "description": "Complete Postman collection for testing Cognee's API end-to-end:\n\n1. Health check\n2. Register a user\n3. Login (get auth token)\n4. Get current user\n5. Create a dataset\n6. Add data to the dataset\n7. Cognify (sync)\n8. Cognify (async / background)\n9. Poll dataset status\n10. Search (multiple strategies)\n11. Search history & debug traces\n12. Get dataset graph\n13. Delete data & dataset\n\n**Setup:** Set the `base_url` variable (default `http://localhost:8000`).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "auth_token", "value": "", "type": "string" },
+    { "key": "dataset_id", "value": "", "type": "string" },
+    { "key": "dataset_name", "value": "test_dataset", "type": "string" },
+    { "key": "data_id", "value": "", "type": "string" },
+    { "key": "pipeline_run_id", "value": "", "type": "string" },
+    { "key": "user_email", "value": "test@example.com", "type": "string" },
+    { "key": "user_password", "value": "TestPassword123!", "type": "string" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{auth_token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "0 — Setup & Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] },
+            "description": "Verify the server is running and healthy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Server is healthy', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.status).to.eql('ready');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Health Check (Detailed)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/health/detailed", "host": ["{{base_url}}"], "path": ["health", "detailed"] },
+            "description": "Comprehensive health status with component details."
+          }
+        },
+        {
+          "name": "Get Settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/settings", "host": ["{{base_url}}"], "path": ["api", "v1", "settings"] },
+            "description": "Retrieve current LLM and vector DB settings."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 — Auth",
+      "item": [
+        {
+          "name": "Register User",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{user_email}}\",\n  \"password\": \"{{user_password}}\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "register"] },
+            "description": "Register a new user. If REQUIRE_AUTHENTICATION is False, a default user is used and this step can be skipped."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    pm.test('User registered', function () {",
+                  "        pm.response.to.have.status(201);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "username", "value": "{{user_email}}", "type": "text" },
+                { "key": "password", "value": "{{user_password}}", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] },
+            "description": "Authenticate and obtain a bearer token. The token is automatically saved to the collection variable `auth_token`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Login successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.access_token).to.be.a('string');",
+                  "    pm.collectionVariables.set('auth_token', body.access_token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Current User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/auth/me", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "me"] },
+            "description": "Verify the token works and see current user info."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Auth token valid', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.email).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 — Datasets",
+      "item": [
+        {
+          "name": "Create Dataset",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{dataset_name}}\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/datasets", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets"] },
+            "description": "Create a new dataset (or return existing one with the same name)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Dataset created', function () {",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.id).to.be.a('string');",
+                  "    pm.collectionVariables.set('dataset_id', body.id);",
+                  "    pm.collectionVariables.set('dataset_name', body.name);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Datasets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets"] },
+            "description": "List all datasets accessible to the authenticated user."
+          }
+        },
+        {
+          "name": "Get Dataset Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets/{{dataset_id}}/data", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets", "{{dataset_id}}", "data"] },
+            "description": "List all data items within a dataset."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Data items returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var body = pm.response.json();",
+                  "    if (body.length > 0) {",
+                  "        pm.collectionVariables.set('data_id', body[0].id);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 — Add Data (Ingestion)",
+      "item": [
+        {
+          "name": "Add Text File",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "data",
+                  "type": "file",
+                  "src": "",
+                  "description": "Select a file to upload (txt, pdf, docx, csv, etc.)"
+                },
+                { "key": "datasetName", "value": "{{dataset_name}}", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/api/v1/add", "host": ["{{base_url}}"], "path": ["api", "v1", "add"] },
+            "description": "Upload a file to a dataset. Select a file in the `data` field before sending.\n\nYou can also pass a URL as the file content (if ALLOW_HTTP_REQUESTS is enabled)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Data added successfully', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add Data by Dataset ID",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "data",
+                  "type": "file",
+                  "src": "",
+                  "description": "Select a file to upload"
+                },
+                { "key": "datasetId", "value": "{{dataset_id}}", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/api/v1/add", "host": ["{{base_url}}"], "path": ["api", "v1", "add"] },
+            "description": "Upload a file using a dataset UUID (useful for datasets you don't own)."
+          }
+        },
+        {
+          "name": "Add Data with Node Set",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "data",
+                  "type": "file",
+                  "src": "",
+                  "description": "Select a file to upload"
+                },
+                { "key": "datasetName", "value": "{{dataset_name}}", "type": "text" },
+                { "key": "node_set", "value": "engineering_docs", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/api/v1/add", "host": ["{{base_url}}"], "path": ["api", "v1", "add"] },
+            "description": "Upload a file with a node_set tag for graph organization and filtered search."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 — Cognify (Processing)",
+      "item": [
+        {
+          "name": "Cognify (Sync — Blocking)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"run_in_background\": false\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/cognify", "host": ["{{base_url}}"], "path": ["api", "v1", "cognify"] },
+            "description": "Process a dataset synchronously. Blocks until the full pipeline completes:\n- Document classification\n- Text chunking\n- Entity extraction (LLM)\n- Graph construction\n- Vector embeddings\n- Summarization"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognify completed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cognify (Async — Background)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"run_in_background\": true\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/cognify", "host": ["{{base_url}}"], "path": ["api", "v1", "cognify"] },
+            "description": "Launch cognify in the background. Returns immediately with a pipeline_run_id you can use to subscribe via WebSocket or poll via the status endpoint."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Background cognify started', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var body = pm.response.json();",
+                  "    // Extract pipeline_run_id from the response (key is the dataset name)",
+                  "    var keys = Object.keys(body);",
+                  "    if (keys.length > 0) {",
+                  "        var run = body[keys[0]];",
+                  "        if (run && run.pipeline_run_id) {",
+                  "            pm.collectionVariables.set('pipeline_run_id', run.pipeline_run_id);",
+                  "        }",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cognify by Dataset IDs",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dataset_ids\": [\"{{dataset_id}}\"],\n  \"run_in_background\": false\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/cognify", "host": ["{{base_url}}"], "path": ["api", "v1", "cognify"] },
+            "description": "Cognify using dataset UUIDs (for datasets not owned by the user)."
+          }
+        },
+        {
+          "name": "Cognify with Custom Prompt",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"run_in_background\": false,\n  \"custom_prompt\": \"Extract entities focusing on people, organizations, and technologies. Identify hierarchical and causal relationships.\",\n  \"chunk_size\": 512,\n  \"chunks_per_batch\": 20\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/cognify", "host": ["{{base_url}}"], "path": ["api", "v1", "cognify"] },
+            "description": "Cognify with a custom extraction prompt and chunk configuration."
+          }
+        },
+        {
+          "name": "Cognify (Vector-Only, Skip Graph)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"run_in_background\": false,\n  \"skip_graph\": true\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/cognify", "host": ["{{base_url}}"], "path": ["api", "v1", "cognify"] },
+            "description": "Store only chunks and vector embeddings — skip graph extraction and summarization. Faster ingestion for vector-only retrieval."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 — Ingestion Status",
+      "item": [
+        {
+          "name": "Get Dataset Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/datasets/status?dataset={{dataset_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "datasets", "status"],
+              "query": [{ "key": "dataset", "value": "{{dataset_id}}" }]
+            },
+            "description": "Poll the processing status of a dataset. Returns one of: pending, running, completed, failed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status returned', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var body = pm.response.json();",
+                  "    console.log('Dataset status:', JSON.stringify(body));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "WebSocket Subscribe (Reference)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/cognify/subscribe/{{pipeline_run_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "cognify", "subscribe", "{{pipeline_run_id}}"]
+            },
+            "description": "**NOTE: This is a WebSocket endpoint — it cannot be tested directly in Postman's HTTP runner.**\n\nUse Postman's WebSocket tab or a tool like `wscat`:\n\n```bash\nwscat -c ws://localhost:8000/api/v1/cognify/subscribe/<pipeline_run_id> --header \"Cookie: auth_token=<token>\"\n```\n\nReturns real-time JSON messages with `pipeline_run_id`, `status`, and `payload` (graph data) until the pipeline completes or errors."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 — Search (Retrieval)",
+      "item": [
+        {
+          "name": "Search — GRAPH_COMPLETION (default)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What are the main topics in the documents?\",\n  \"search_type\": \"GRAPH_COMPLETION\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 10\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Graph traversal + LLM completion. Default and recommended search type."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Search returned results', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Search — CHUNKS (Vector Similarity)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What are the main topics?\",\n  \"search_type\": \"CHUNKS\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 5\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Pure vector similarity search over document chunks."
+          }
+        },
+        {
+          "name": "Search — RAG_COMPLETION",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"Summarize the key findings.\",\n  \"search_type\": \"RAG_COMPLETION\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 10\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Traditional RAG: retrieve chunks via vector search, then pass to LLM for completion."
+          }
+        },
+        {
+          "name": "Search — TRIPLET_COMPLETION",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What relationships exist between entities?\",\n  \"search_type\": \"TRIPLET_COMPLETION\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 10\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Triplet-based (subject-predicate-object) search with LLM completion."
+          }
+        },
+        {
+          "name": "Search — SUMMARIES",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"Overview of the dataset content\",\n  \"search_type\": \"SUMMARIES\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 5\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Search pre-computed document summaries."
+          }
+        },
+        {
+          "name": "Search — GRAPH_COMPLETION_COT",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"Explain the relationship between X and Y step by step.\",\n  \"search_type\": \"GRAPH_COMPLETION_COT\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 10\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Chain-of-thought reasoning over the knowledge graph."
+          }
+        },
+        {
+          "name": "Search — CHUNKS_LEXICAL",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"cognee knowledge graph\",\n  \"search_type\": \"CHUNKS_LEXICAL\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 5\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Keyword/lexical search over document chunks (BM25-style)."
+          }
+        },
+        {
+          "name": "Search — Context Only (no LLM)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What is cognee?\",\n  \"search_type\": \"GRAPH_COMPLETION\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"top_k\": 10,\n  \"only_context\": true\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Returns only the retrieved context that would be sent to the LLM — skips the LLM completion call. Useful for debugging retrieval quality."
+          }
+        },
+        {
+          "name": "Search — With Node Name Filter",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What is in the engineering docs?\",\n  \"search_type\": \"GRAPH_COMPLETION\",\n  \"datasets\": [\"{{dataset_name}}\"],\n  \"node_name\": [\"engineering_docs\"],\n  \"top_k\": 10\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Filter search results to a specific node_set defined during the add step."
+          }
+        },
+        {
+          "name": "Search — By Dataset ID",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What is in the dataset?\",\n  \"search_type\": \"GRAPH_COMPLETION\",\n  \"dataset_ids\": [\"{{dataset_id}}\"],\n  \"top_k\": 10\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Search using dataset UUIDs (for datasets not owned by the user)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 — Search History & Debug",
+      "item": [
+        {
+          "name": "Get Search History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/search", "host": ["{{base_url}}"], "path": ["api", "v1", "search"] },
+            "description": "Retrieve past search queries for the authenticated user."
+          }
+        },
+        {
+          "name": "Get Retrieval Debug Traces",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/search/debug?limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "search", "debug"],
+              "query": [{ "key": "limit", "value": "10" }]
+            },
+            "description": "Get per-step retrieval traces with timing, result counts, and previews. Useful for debugging search performance."
+          }
+        },
+        {
+          "name": "Delete Debug Traces",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/search/debug", "host": ["{{base_url}}"], "path": ["api", "v1", "search", "debug"] },
+            "description": "Clear all retrieval traces for the authenticated user."
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 — Graph & Visualization",
+      "item": [
+        {
+          "name": "Get Dataset Graph",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets/{{dataset_id}}/graph", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets", "{{dataset_id}}", "graph"] },
+            "description": "Get the knowledge graph (nodes + edges) for a dataset. Useful for visualization."
+          }
+        },
+        {
+          "name": "Download Raw Data File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets/{{dataset_id}}/data/{{data_id}}/raw", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets", "{{dataset_id}}", "data", "{{data_id}}", "raw"] },
+            "description": "Download the original unprocessed file for a data item."
+          }
+        }
+      ]
+    },
+    {
+      "name": "9 — Cleanup",
+      "item": [
+        {
+          "name": "Delete Data Item",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets/{{dataset_id}}/data/{{data_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets", "{{dataset_id}}", "data", "{{data_id}}"] },
+            "description": "Delete a specific data item from a dataset."
+          }
+        },
+        {
+          "name": "Delete Dataset",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets/{{dataset_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets", "{{dataset_id}}"] },
+            "description": "Delete an entire dataset and all its associated data."
+          }
+        },
+        {
+          "name": "Delete All User Data",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{base_url}}/api/v1/datasets", "host": ["{{base_url}}"], "path": ["api", "v1", "datasets"] },
+            "description": "Delete ALL datasets and data owned by the authenticated user. Use with caution."
+          }
+        }
+      ]
+    }
+  ]
+}

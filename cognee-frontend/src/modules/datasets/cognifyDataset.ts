@@ -1,59 +1,36 @@
 import { fetch } from "@/utils";
-// import getDatasetGraph from "./getDatasetGraph";
 import { Dataset } from "../ingestion/useDatasets";
 
-// interface GraphData {
-//   nodes: { id: string; label: string; properties?: object }[];
-//   edges: { source: string; target: string; label: string }[];
-// }
-
-export default async function cognifyDataset(dataset: Dataset, useCloud: boolean = false, chunkSize?: number) {
-  // const data = await (
-  return fetch("/v1/cognify", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+/**
+ * Kick off the cognify pipeline for a dataset in background mode.
+ *
+ * The API returns immediately with per-dataset PipelineRunStarted info
+ * (including pipeline_run_id). Use getDatasetStatus() to poll for completion.
+ */
+export default async function cognifyDataset(
+  dataset: Dataset,
+  useCloud: boolean = false,
+  chunkSize?: number,
+  skipGraph: boolean = false,
+  documentParser?: string,
+  parserOptions?: Record<string, string>,
+): Promise<Record<string, { status: string; pipeline_run_id: string }>> {
+  return fetch(
+    "/v1/cognify",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        datasetIds: [dataset.id],
+        runInBackground: true,
+        ...(chunkSize ? { chunk_size: chunkSize } : {}),
+        ...(skipGraph ? { skip_graph: true } : {}),
+        ...(documentParser ? { document_parser: documentParser } : {}),
+        ...(parserOptions && Object.keys(parserOptions).length
+          ? { parser_options: parserOptions }
+          : {}),
+      }),
     },
-    body: JSON.stringify({
-      datasetIds: [dataset.id],
-      runInBackground: false,
-      ...(chunkSize ? { chunk_size: chunkSize } : {}),
-    }),
-  }, useCloud)
-  .then((response) => response.json());
-  // .then(() => {
-  //   return getDatasetGraph(dataset)
-  //     .then((data) => {
-  //       onUpdate({
-  //         nodes: data.nodes,
-  //         edges: data.edges,
-  //       });
-  //     });
-  // });
-  // )
-
-    // const websocket = new WebSocket(`ws://localhost:8000/api/v1/cognify/subscribe/${data.pipeline_run_id}`);
-
-    // let isCognifyDone = false;
-
-    // websocket.onmessage = (event) => {
-    //   const data = JSON.parse(event.data);
-    //   onUpdate?.({
-    //     nodes: data.payload.nodes,
-    //     edges: data.payload.edges,
-    //   });
-
-    //   if (data.status === "PipelineRunCompleted") {
-    //     isCognifyDone = true;
-    //     websocket.close();
-    //   }
-    // };
-
-    // return new Promise(async (resolve) => {
-    //   while (!isCognifyDone) {
-    //     await new Promise(resolve => setTimeout(resolve, 1000));
-    //   }
-
-    //   resolve(true);
-    // });
+    useCloud,
+  ).then((response) => response.json());
 }

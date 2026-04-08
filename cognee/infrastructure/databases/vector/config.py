@@ -28,16 +28,27 @@ class VectorConfig(BaseSettings):
     vector_db_name: str = ""
     vector_db_key: str = ""
     vector_db_provider: str = "lancedb"
-    vector_dataset_database_handler: str = "lancedb"
+    vector_dataset_database_handler: str = ""
     vector_db_username: str = ""
     vector_db_password: str = ""
     vector_db_host: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="allow")
 
+    _PROVIDER_TO_HANDLER = {
+        "lancedb": "lancedb",
+        "chromadb": "chromadb",
+        "pgvector": "pgvector",
+    }
+
     @pydantic.model_validator(mode="after")
     def validate_paths(self):
         base_config = get_base_config()
+
+        if not self.vector_dataset_database_handler:
+            self.vector_dataset_database_handler = self._PROVIDER_TO_HANDLER.get(
+                self.vector_db_provider.lower(), "lancedb"
+            )
 
         # If vector_db_url is provided and is not a path skip checking if path is absolute (as it can also be a url)
         if self.vector_db_url and Path(self.vector_db_url).exists():

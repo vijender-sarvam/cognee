@@ -24,19 +24,33 @@ class UUIDEncoder(json.JSONEncoder):
 class RemoteKuzuAdapter(KuzuAdapter):
     """Adapter for remote Kuzu graph database operations via REST API."""
 
-    def __init__(self, api_url: str, username: str, password: str):
+    def __init__(
+        self,
+        api_url: str,
+        username: str,
+        password: str,
+        database_name: str = "",
+    ):
         """Initialize remote Kuzu database connection.
 
         Args:
             api_url: URL of the Kuzu REST API
             username: Optional username for API authentication
             password: Optional password for API authentication
+            database_name: Database to target on the remote server (per-dataset isolation)
         """
-        # Initialize parent with a dummy path since we're using REST API
-        super().__init__("/tmp/kuzu_remote")
+        # Intentionally skip KuzuAdapter.__init__ — it opens a local embedded
+        # database which causes file-lock contention.  The remote adapter only
+        # talks to the server over HTTP and needs none of the local state.
+        self.db_path = None
+        self.db = None
+        self.connection = None
+        self.open_connections = 0
+        self._is_closed = False
         self.api_url = api_url
         self.username = username
         self.password = password
+        self.database_name = database_name or None
         self._session = None
         self._schema_initialized = False
 
@@ -82,6 +96,12 @@ class RemoteKuzuAdapter(KuzuAdapter):
             logger.error(f"Request data: {data}")
             raise
 
+    def _query_payload(self, query: str, params: Optional[dict] = None) -> dict:
+        payload: Dict[str, Any] = {"query": query, "parameters": params or {}}
+        if self.database_name:
+            payload["database"] = self.database_name
+        return payload
+
     async def query(self, query: str, params: Optional[dict] = None) -> List[Tuple]:
         """Execute a Kuzu query via the REST API."""
         try:
@@ -89,9 +109,7 @@ class RemoteKuzuAdapter(KuzuAdapter):
             if not self._schema_initialized:
                 await self._initialize_schema()
 
-            response = await self._make_request(
-                "/query", {"query": query, "parameters": params or {}}
-            )
+            response = await self._make_request("/query", self._query_payload(query, params))
 
             # Convert response to list of tuples
             results = []
@@ -119,10 +137,9 @@ class RemoteKuzuAdapter(KuzuAdapter):
     async def _check_schema_exists(self) -> bool:
         """Check if the required schema exists without causing recursion."""
         try:
-            # Make a direct request to check schema using Cypher
             response = await self._make_request(
                 "/query",
-                {"query": "MATCH (n:Node) RETURN COUNT(n) > 0", "parameters": {}},
+                self._query_payload("MATCH (n:Node) RETURN COUNT(n) > 0"),
             )
             return bool(response.get("data") and response["data"][0][0])
         except Exception as e:
@@ -132,12 +149,11 @@ class RemoteKuzuAdapter(KuzuAdapter):
     async def _create_schema(self):
         """Create the required schema tables."""
         try:
-            # Create Node table if it doesn't exist
             try:
                 await self._make_request(
                     "/query",
-                    {
-                        "query": """
+                    self._query_payload(
+                        """
                         CREATE NODE TABLE IF NOT EXISTS Node (
                             id STRING,
                             name STRING,
@@ -147,20 +163,18 @@ class RemoteKuzuAdapter(KuzuAdapter):
                             updated_at TIMESTAMP,
                             PRIMARY KEY (id)
                         )
-                        """,
-                        "parameters": {},
-                    },
+                        """
+                    ),
                 )
             except aiohttp.ClientResponseError as e:
                 if "already exists" not in str(e):
                     raise
 
-            # Create EDGE table if it doesn't exist
             try:
                 await self._make_request(
                     "/query",
-                    {
-                        "query": """
+                    self._query_payload(
+                        """
                         CREATE REL TABLE IF NOT EXISTS EDGE (
                             FROM Node TO Node,
                             relationship_name STRING,
@@ -168,9 +182,8 @@ class RemoteKuzuAdapter(KuzuAdapter):
                             created_at TIMESTAMP,
                             updated_at TIMESTAMP
                         )
-                        """,
-                        "parameters": {},
-                    },
+                        """
+                    ),
                 )
             except aiohttp.ClientResponseError as e:
                 if "already exists" not in str(e):
@@ -198,3 +211,19 @@ class RemoteKuzuAdapter(KuzuAdapter):
         except Exception as e:
             logger.error(f"Failed to initialize schema: {e}")
             raise
+
+    async def delete_graph(self) -> None:
+        """Delete the database on the remote server."""
+        if not self.database_name:
+            return
+        session = await self._get_session()
+        url = f"{self.api_url}/database/{self.database_name}"
+        async with session.delete(url) as response:
+            if response.status not in (200, 404):
+                detail = await response.text()
+                raise aiohttp.ClientResponseError(
+                    response.request_info,
+                    response.history,
+                    status=response.status,
+                    message=detail,
+                )

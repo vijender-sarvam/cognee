@@ -1,0 +1,178 @@
+{
+  "info": {
+    "name": "Sarvam Document Intelligence OCR",
+    "description": "Full job-based workflow for Sarvam OCR:\n1. Create Job\n2. Get Upload URL\n3. Upload PDF\n4. Start Job\n5. Poll Status\n6. Download Result",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://api.sarvam.ai/doc-digitization/job/v1"
+    },
+    {
+      "key": "api_key",
+      "value": "sk_gbc203lq_PR7BnAAbSdgx1Vneo6zOUNaU"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "description": "Auto-populated after Step 1"
+    },
+    {
+      "key": "upload_url",
+      "value": "",
+      "description": "Auto-populated after Step 2"
+    },
+    {
+      "key": "download_url",
+      "value": "",
+      "description": "Auto-populated after Step 6"
+    },
+    {
+      "key": "filename",
+      "value": "document.pdf"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Create Job",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "api-subscription-key", "value": "{{api_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"job_parameters\": {\n    \"language\": \"en-IN\",\n    \"output_format\": \"md\"\n  }\n}"
+        },
+        "url": { "raw": "{{base_url}}", "host": ["{{base_url}}"] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var json = pm.response.json();",
+              "if (json.job_id) {",
+              "    pm.collectionVariables.set('job_id', json.job_id);",
+              "    console.log('job_id saved:', json.job_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Get Upload URL",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "api-subscription-key", "value": "{{api_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"job_id\": \"{{job_id}}\",\n  \"files\": [\"{{filename}}\"]\n}"
+        },
+        "url": { "raw": "{{base_url}}/upload-files", "host": ["{{base_url}}"], "path": ["upload-files"] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var json = pm.response.json();",
+              "var filename = pm.collectionVariables.get('filename');",
+              "if (json.upload_urls && json.upload_urls[filename]) {",
+              "    var url = json.upload_urls[filename].file_url;",
+              "    pm.collectionVariables.set('upload_url', url);",
+              "    console.log('upload_url saved');",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Upload PDF (PUT to presigned URL)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/pdf" },
+          { "key": "x-ms-blob-type", "value": "BlockBlob", "description": "Required for Azure Blob Storage presigned URLs" }
+        ],
+        "body": {
+          "mode": "file",
+          "file": { "src": "/path/to/your/document.pdf" }
+        },
+        "url": { "raw": "{{upload_url}}", "host": ["{{upload_url}}"] },
+        "description": "Select your PDF file in the Body > file tab before sending."
+      }
+    },
+    {
+      "name": "4. Start Job",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "api-subscription-key", "value": "{{api_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "" },
+        "url": { "raw": "{{base_url}}/{{job_id}}/start", "host": ["{{base_url}}"], "path": ["{{job_id}}", "start"] }
+      }
+    },
+    {
+      "name": "5. Poll Job Status",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "api-subscription-key", "value": "{{api_key}}" }
+        ],
+        "url": { "raw": "{{base_url}}/{{job_id}}/status", "host": ["{{base_url}}"], "path": ["{{job_id}}", "status"] },
+        "description": "Repeat this request until job_state is 'Completed', 'PartiallyCompleted', or 'Failed'. Typical processing takes 30-120 seconds."
+      }
+    },
+    {
+      "name": "6. Download Result (get download URL)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "api-subscription-key", "value": "{{api_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "" },
+        "url": { "raw": "{{base_url}}/{{job_id}}/download-files", "host": ["{{base_url}}"], "path": ["{{job_id}}", "download-files"] },
+        "description": "Returns download_urls with presigned URLs. The result is a ZIP file containing the markdown output."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var json = pm.response.json();",
+              "if (json.download_urls) {",
+              "    var firstKey = Object.keys(json.download_urls)[0];",
+              "    var url = json.download_urls[firstKey].file_url;",
+              "    pm.collectionVariables.set('download_url', url);",
+              "    console.log('download_url saved:', url);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Fetch ZIP Result",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{download_url}}", "host": ["{{download_url}}"] },
+        "description": "Downloads the ZIP file containing the markdown output. Save the response as a .zip file, then extract to see the .md result."
+      }
+    }
+  ]
+}

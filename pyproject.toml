@@ -161,6 +161,7 @@ dev = [
 ]
 debug = ["debugpy>=1.8.9,<2.0.0"]
 redis = ["redis>=5.0.3,<6.0.0"]
+queue = ["arq>=0.25.0,<1.0.0"]
 
 tracing = [
     "opentelemetry-api>=1.20.0,<2",

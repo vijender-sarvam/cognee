@@ -157,12 +157,23 @@ class ChromaDBAdapter(VectorDBInterface):
     connection: AsyncHttpClient = None
 
     def __init__(
-        self, url: Optional[str], api_key: Optional[str], embedding_engine: EmbeddingEngine
+        self,
+        url: Optional[str],
+        api_key: Optional[str],
+        embedding_engine: EmbeddingEngine,
+        database_name: Optional[str] = None,
     ):
         self.embedding_engine = embedding_engine
         self.url = url
         self.api_key = api_key
+        self.database_name = database_name
         self.VECTOR_DB_LOCK = asyncio.Lock()
+
+    def _scoped_collection_name(self, collection_name: str) -> str:
+        """Prefix the collection name with the database_name (dataset id) for isolation."""
+        if self.database_name:
+            return f"{self.database_name}_{collection_name}"
+        return collection_name
 
     async def get_connection(self) -> AsyncHttpClient:
         """
@@ -213,8 +224,9 @@ class ChromaDBAdapter(VectorDBInterface):
 
             - bool: Returns True if the collection exists, otherwise False.
         """
+        scoped = self._scoped_collection_name(collection_name)
         collections = await self.get_collection_names()
-        return collection_name in collections
+        return scoped in collections
 
     async def create_collection(self, collection_name: str, payload_schema=None):
         """
@@ -226,12 +238,13 @@ class ChromaDBAdapter(VectorDBInterface):
             - collection_name (str): The name of the collection to create.
             - payload_schema: The schema for the payload; can be None. (default None)
         """
+        scoped = self._scoped_collection_name(collection_name)
         async with self.VECTOR_DB_LOCK:
             client = await self.get_connection()
 
             if not await self.has_collection(collection_name):
                 await client.create_collection(
-                    name=collection_name, metadata={"hnsw:space": "cosine"}
+                    name=scoped, metadata={"hnsw:space": "cosine"}
                 )
 
     async def get_collection(self, collection_name: str) -> AsyncHttpClient:
@@ -251,8 +264,9 @@ class ChromaDBAdapter(VectorDBInterface):
         if not await self.has_collection(collection_name):
             raise CollectionNotFoundError(f"Collection '{collection_name}' not found!")
 
+        scoped = self._scoped_collection_name(collection_name)
         client = await self.get_connection()
-        return await client.get_collection(collection_name)
+        return await client.get_collection(scoped)
 
     async def create_data_points(self, collection_name: str, data_points: list[DataPoint]):
         """
@@ -540,17 +554,20 @@ class ChromaDBAdapter(VectorDBInterface):
 
     async def prune(self):
         """
-        Delete all collections in the ChromaDB database.
+        Delete collections belonging to this adapter's scope (dataset).
+        When database_name is set, only collections with the matching prefix are removed.
 
         Returns:
         --------
 
-            Returns True upon successful deletion of all collections.
+            Returns True upon successful deletion of the scoped collections.
         """
         client = await self.get_connection()
         collections = await client.list_collections()
+        prefix = f"{self.database_name}_" if self.database_name else None
         for collection_name in collections:
-            await client.delete_collection(collection_name)
+            if prefix is None or collection_name.startswith(prefix):
+                await client.delete_collection(collection_name)
         return True
 
     async def get_collection_names(self):

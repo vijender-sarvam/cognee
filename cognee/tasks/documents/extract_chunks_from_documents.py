@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from uuid import UUID
 from sqlalchemy import select
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional, TYPE_CHECKING
 
 from cognee.modules.pipelines.tasks.task import task_summary
 from cognee.shared.logging_utils import get_logger
@@ -10,6 +12,9 @@ from cognee.infrastructure.databases.relational import get_relational_engine
 from cognee.modules.chunking.TextChunker import TextChunker
 from cognee.modules.chunking.Chunker import Chunker
 from cognee.tasks.documents.exceptions import InvalidChunkSizeError, InvalidChunkerError
+
+if TYPE_CHECKING:
+    from cognee.modules.data.processing.parsers import DocumentParser
 
 
 async def update_document_token_count(document_id: UUID, token_count: int) -> None:
@@ -32,6 +37,7 @@ async def extract_chunks_from_documents(
     documents: list[Document],
     max_chunk_size: int,
     chunker: Chunker = TextChunker,
+    document_parser: Optional[DocumentParser] = None,
 ) -> AsyncGenerator:
     """
     Extracts chunks of data from a list of documents based on the specified chunking parameters.
@@ -39,6 +45,9 @@ async def extract_chunks_from_documents(
     Notes:
         - The `read` method of the `Document` class must be implemented to support the chunking operation.
         - The `chunker` parameter determines the chunking logic and should align with the document type.
+        - If `document_parser` is provided it is forwarded to `document.read()`,
+          allowing callers to override the default parser (e.g. use ``unstructured``
+          instead of ``pypdf`` for PDFs).
     """
     if not isinstance(max_chunk_size, int) or max_chunk_size <= 0:
         raise InvalidChunkSizeError(max_chunk_size)
@@ -51,7 +60,9 @@ async def extract_chunks_from_documents(
         document_token_count = 0
 
         async for document_chunk in document.read(
-            max_chunk_size=max_chunk_size, chunker_cls=chunker
+            max_chunk_size=max_chunk_size,
+            chunker_cls=chunker,
+            document_parser=document_parser,
         ):
             document_token_count += document_chunk.chunk_size
             document_chunk.belongs_to_set = document.belongs_to_set

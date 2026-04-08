@@ -56,6 +56,9 @@ async def cognify(
     custom_prompt: Optional[str] = None,
     temporal_cognify: bool = False,
     data_per_batch: int = 20,
+    skip_graph: bool = False,
+    document_parser: Optional[str] = None,
+    parser_options: Optional[dict] = None,
     **kwargs,
 ):
     """
@@ -221,12 +224,19 @@ async def cognify(
                     "ontology_config": {"ontology_resolver": get_default_ontology_resolver()}
                 }
 
+        resolved_parser = None
+        if document_parser:
+            from cognee.modules.data.processing.parsers import get_parser
+
+            resolved_parser = get_parser(document_parser, **(parser_options or {}))
+
         if temporal_cognify:
             tasks = await get_temporal_tasks(
                 user=user,
                 chunker=chunker,
                 chunk_size=chunk_size,
                 chunks_per_batch=chunks_per_batch,
+                document_parser=resolved_parser,
             )
         else:
             tasks = await get_default_tasks(
@@ -237,6 +247,8 @@ async def cognify(
                 config=config,
                 custom_prompt=custom_prompt,
                 chunks_per_batch=chunks_per_batch,
+                skip_graph=skip_graph,
+                document_parser=resolved_parser,
                 **kwargs,
             )
 
@@ -274,6 +286,8 @@ async def get_default_tasks(  # TODO: Find out a better way to do this (Boris's 
     config: Config = None,
     custom_prompt: Optional[str] = None,
     chunks_per_batch: int = None,
+    skip_graph: bool = False,
+    document_parser=None,
     **kwargs,
 ) -> list[Task]:
     if config is None:
@@ -302,37 +316,52 @@ async def get_default_tasks(  # TODO: Find out a better way to do this (Boris's 
         )
 
     default_tasks = [
-        Task(classify_documents),
+        Task(classify_documents, document_parser=document_parser),
         Task(
             extract_chunks_from_documents,
             max_chunk_size=chunk_size or get_max_chunk_tokens(),
             chunker=chunker,
-        ),  # Extract text chunks based on the document type.
-        Task(
-            extract_graph_from_data,
-            graph_model=graph_model,
-            config=config,
-            custom_prompt=custom_prompt,
-            task_config={"batch_size": chunks_per_batch},
-            **kwargs,
-        ),  # Generate knowledge graphs from the document chunks.
-        Task(
-            summarize_text,
-            task_config={"batch_size": chunks_per_batch},
+            document_parser=document_parser,
         ),
+    ]
+
+    if not skip_graph:
+        default_tasks += [
+            Task(
+                extract_graph_from_data,
+                graph_model=graph_model,
+                config=config,
+                custom_prompt=custom_prompt,
+                task_config={"batch_size": chunks_per_batch},
+                **kwargs,
+            ),  # Generate knowledge graphs from the document chunks.
+            Task(
+                summarize_text,
+                task_config={"batch_size": chunks_per_batch},
+            ),
+        ]
+
+    default_tasks.append(
         Task(
             add_data_points,
-            embed_triplets=embed_triplets,
+            embed_triplets=embed_triplets if not skip_graph else False,
+            skip_graph_writes=skip_graph,
             task_config={"batch_size": chunks_per_batch},
         ),
-        Task(extract_dlt_fk_edges),
-    ]
+    )
+
+    if not skip_graph:
+        default_tasks.append(Task(extract_dlt_fk_edges))
 
     return default_tasks
 
 
 async def get_temporal_tasks(
-    user: User = None, chunker=TextChunker, chunk_size: int = None, chunks_per_batch: int = None
+    user: User = None,
+    chunker=TextChunker,
+    chunk_size: int = None,
+    chunks_per_batch: int = None,
+    document_parser=None,
 ) -> list[Task]:
     """
     Builds and returns a list of temporal processing tasks to be executed in sequence.
@@ -360,11 +389,12 @@ async def get_temporal_tasks(
         chunks_per_batch = configured if configured is not None else 10
 
     temporal_tasks = [
-        Task(classify_documents),
+        Task(classify_documents, document_parser=document_parser),
         Task(
             extract_chunks_from_documents,
             max_chunk_size=chunk_size or get_max_chunk_tokens(),
             chunker=chunker,
+            document_parser=document_parser,
         ),
         Task(extract_events_and_timestamps, task_config={"batch_size": chunks_per_batch}),
         Task(extract_knowledge_graph_from_events),

@@ -100,6 +100,30 @@ services:
     networks:
       - cognee-network
 
+  kuzu-remote:
+    container_name: kuzu-remote
+    restart: always
+    profiles:
+      - kuzu-remote
+    build:
+      context: .
+      dockerfile: Dockerfile.kuzu-remote
+    environment:
+      - KUZU_DATA_DIR=/data/kuzu
+      - KUZU_HOST=0.0.0.0
+      - KUZU_PORT=8182
+    ports:
+      - "8182:8182"
+    volumes:
+      - kuzu_data:/data/kuzu
+    networks:
+      - cognee-network
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4GB
+
   neo4j:
     image: neo4j:5.26  # Pinned to 5.x; compatible with neo4j Python driver >=5.28,<6
     container_name: neo4j
@@ -197,3 +221,4 @@ volumes:
   postgres_data:
   redis_data:
   qdrant_data:
+  kuzu_data:

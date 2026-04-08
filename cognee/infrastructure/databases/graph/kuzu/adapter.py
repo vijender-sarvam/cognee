@@ -2,6 +2,7 @@
 
 import os
 import json
+import time
 import asyncio
 import tempfile
 from uuid import UUID, uuid5, NAMESPACE_OID
@@ -34,6 +35,9 @@ from cognee.modules.observability.tracing import (
 
 logger = get_logger()
 
+KUZU_LOCK_MAX_RETRIES = 5
+KUZU_LOCK_BASE_DELAY = 0.5
+KUZU_LOCK_MAX_DELAY = 10.0
 
 cache_config = get_cache_config()
 if cache_config.shared_kuzu_lock:
@@ -67,21 +71,27 @@ class KuzuAdapter(GraphDBInterface):
         self.KUZU_ASYNC_LOCK = asyncio.Lock()
         self._connection_change_lock = asyncio.Lock()
 
+    @staticmethod
+    def _is_lock_error(exc: Exception) -> bool:
+        """Check whether the exception is a Kuzu file-lock contention error."""
+        msg = str(exc).lower()
+        return "could not set lock on file" in msg
+
     def _initialize_connection(self) -> None:
-        """Initialize the Kuzu database connection and schema."""
+        """Initialize the Kuzu database connection and schema.
+
+        Retries with exponential backoff when another process holds the
+        database file lock (common when an ARQ worker is running cognify
+        while the API server needs to answer a search request).
+        """
 
         def _install_json_extension():
-            """
-            Function handles installing of the json extension for the current Kuzu version.
-            This has to be done with an empty graph db before connecting to an existing database otherwise
-            missing json extension errors will be raised.
-            """
             try:
                 with tempfile.NamedTemporaryFile(mode="w", delete=True) as temp_file:
                     temp_graph_file = temp_file.name
                     tmp_db = Database(
                         temp_graph_file,
-                        buffer_pool_size=2048 * 1024 * 1024,  # 2048MB buffer pool
+                        buffer_pool_size=2048 * 1024 * 1024,
                         max_db_size=4096 * 1024 * 1024,
                     )
                     tmp_db.init_database()
@@ -92,98 +102,117 @@ class KuzuAdapter(GraphDBInterface):
 
         _install_json_extension()
 
-        try:
-            if "s3://" in self.db_path:
-                with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
-                    self.temp_graph_file = temp_file.name
+        last_exc: Optional[Exception] = None
 
-                run_sync(self.pull_from_s3())
-
-                self.db = Database(
-                    self.temp_graph_file,
-                    buffer_pool_size=2048 * 1024 * 1024,  # 2048MB buffer pool
-                    max_db_size=4096 * 1024 * 1024,
-                )
-            else:
-                # Ensure the parent directory exists before creating the database
-                db_dir = os.path.dirname(self.db_path)
-
-                # If db_path is just a filename, db_dir will be empty string
-                # In this case, use the directory containing the db_path or current directory
-                if not db_dir:
-                    # If no directory in path, use the absolute path's directory
-                    abs_path = os.path.abspath(self.db_path)
-                    db_dir = os.path.dirname(abs_path)
-
-                file_storage = get_file_storage(db_dir)
-
-                run_sync(file_storage.ensure_directory_exists())
+        for attempt in range(KUZU_LOCK_MAX_RETRIES + 1):
+            try:
+                self._open_database()
+                self.db.init_database()
+                self.connection = Connection(self.db)
 
                 try:
-                    self.db = Database(
-                        self.db_path,
-                        buffer_pool_size=2048 * 1024 * 1024,  # 2048MB buffer pool
-                        max_db_size=4096 * 1024 * 1024,
+                    self.connection.execute("LOAD EXTENSION JSON;")
+                    logger.info("Loaded JSON extension")
+                except Exception as e:
+                    logger.info(f"JSON extension already loaded or unavailable: {e}")
+
+                self.connection.execute("""
+                    CREATE NODE TABLE IF NOT EXISTS Node(
+                        id STRING PRIMARY KEY,
+                        name STRING,
+                        type STRING,
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP,
+                        properties STRING
                     )
-                except RuntimeError:
-                    from .kuzu_migrate import read_kuzu_storage_version
-                    import kuzu
-
-                    kuzu_db_version = read_kuzu_storage_version(self.db_path)
-                    if (
-                        kuzu_db_version == "0.9.0" or kuzu_db_version == "0.8.2"
-                    ) and kuzu_db_version != kuzu.__version__:
-                        # Try to migrate kuzu database to latest version
-                        from .kuzu_migrate import kuzu_migration
-
-                        kuzu_migration(
-                            new_db=self.db_path + "_new",
-                            old_db=self.db_path,
-                            new_version=kuzu.__version__,
-                            old_version=kuzu_db_version,
-                            overwrite=True,
-                        )
-
-                    self.db = Database(
-                        self.db_path,
-                        buffer_pool_size=2048 * 1024 * 1024,  # 2048MB buffer pool
-                        max_db_size=4096 * 1024 * 1024,
+                """)
+                self.connection.execute("""
+                    CREATE REL TABLE IF NOT EXISTS EDGE(
+                        FROM Node TO Node,
+                        relationship_name STRING,
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP,
+                        properties STRING
                     )
+                """)
+                logger.debug("Kuzu database initialized successfully")
+                return
+            except Exception as e:
+                last_exc = e
+                if self._is_lock_error(e) and attempt < KUZU_LOCK_MAX_RETRIES:
+                    delay = min(
+                        KUZU_LOCK_BASE_DELAY * (2**attempt),
+                        KUZU_LOCK_MAX_DELAY,
+                    )
+                    logger.warning(
+                        "Kuzu database locked (attempt %d/%d), retrying in %.1fs…",
+                        attempt + 1,
+                        KUZU_LOCK_MAX_RETRIES,
+                        delay,
+                    )
+                    self.db = None
+                    self.connection = None
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Failed to initialize Kuzu database: {e}")
+                    raise
 
-            self.db.init_database()
-            self.connection = Connection(self.db)
+        logger.error("Kuzu database lock retries exhausted")
+        raise last_exc
+
+    def _open_database(self) -> None:
+        """Open the Kuzu Database handle, with migration fallback."""
+        if "s3://" in self.db_path:
+            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
+                self.temp_graph_file = temp_file.name
+
+            run_sync(self.pull_from_s3())
+
+            self.db = Database(
+                self.temp_graph_file,
+                buffer_pool_size=2048 * 1024 * 1024,
+                max_db_size=4096 * 1024 * 1024,
+            )
+        else:
+            db_dir = os.path.dirname(self.db_path)
+            if not db_dir:
+                abs_path = os.path.abspath(self.db_path)
+                db_dir = os.path.dirname(abs_path)
+
+            file_storage = get_file_storage(db_dir)
+            run_sync(file_storage.ensure_directory_exists())
 
             try:
-                self.connection.execute("LOAD EXTENSION JSON;")
-                logger.info("Loaded JSON extension")
-            except Exception as e:
-                logger.info(f"JSON extension already loaded or unavailable: {e}")
+                self.db = Database(
+                    self.db_path,
+                    buffer_pool_size=2048 * 1024 * 1024,
+                    max_db_size=4096 * 1024 * 1024,
+                )
+            except RuntimeError as e:
+                if self._is_lock_error(e):
+                    raise
+                from .kuzu_migrate import read_kuzu_storage_version
+                import kuzu
 
-            # Create node table with essential fields and timestamp
-            self.connection.execute("""
-                CREATE NODE TABLE IF NOT EXISTS Node(
-                    id STRING PRIMARY KEY,
-                    name STRING,
-                    type STRING,
-                    created_at TIMESTAMP,
-                    updated_at TIMESTAMP,
-                    properties STRING
+                kuzu_db_version = read_kuzu_storage_version(self.db_path)
+                if (
+                    kuzu_db_version == "0.9.0" or kuzu_db_version == "0.8.2"
+                ) and kuzu_db_version != kuzu.__version__:
+                    from .kuzu_migrate import kuzu_migration
+
+                    kuzu_migration(
+                        new_db=self.db_path + "_new",
+                        old_db=self.db_path,
+                        new_version=kuzu.__version__,
+                        old_version=kuzu_db_version,
+                        overwrite=True,
+                    )
+
+                self.db = Database(
+                    self.db_path,
+                    buffer_pool_size=2048 * 1024 * 1024,
+                    max_db_size=4096 * 1024 * 1024,
                 )
-            """)
-            # Create relationship table with timestamp
-            self.connection.execute("""
-                CREATE REL TABLE IF NOT EXISTS EDGE(
-                    FROM Node TO Node,
-                    relationship_name STRING,
-                    created_at TIMESTAMP,
-                    updated_at TIMESTAMP,
-                    properties STRING
-                )
-            """)
-            logger.debug("Kuzu database initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Kuzu database: {e}")
-            raise e
 
     async def push_to_s3(self) -> None:
         if os.getenv("STORAGE_BACKEND", "").lower() == "s3" and hasattr(self, "temp_graph_file"):
@@ -252,19 +281,44 @@ class KuzuAdapter(GraphDBInterface):
                         logger.info("Reconnecting to Kuzu database...")
                         self._initialize_connection()
 
-                    result = self.connection.execute(query, params)
-                    rows = []
+                    last_exc = None
+                    for attempt in range(KUZU_LOCK_MAX_RETRIES + 1):
+                        try:
+                            result = self.connection.execute(query, params)
+                            rows = []
 
-                    while result.has_next():
-                        row = result.get_next()
-                        processed_rows = []
-                        for val in row:
-                            if hasattr(val, "as_py"):
-                                val = val.as_py()
-                            processed_rows.append(val)
-                        rows.append(tuple(processed_rows))
+                            while result.has_next():
+                                row = result.get_next()
+                                processed_rows = []
+                                for val in row:
+                                    if hasattr(val, "as_py"):
+                                        val = val.as_py()
+                                    processed_rows.append(val)
+                                rows.append(tuple(processed_rows))
 
-                    return rows
+                            return rows
+                        except RuntimeError as e:
+                            last_exc = e
+                            if self._is_lock_error(e) and attempt < KUZU_LOCK_MAX_RETRIES:
+                                delay = min(
+                                    KUZU_LOCK_BASE_DELAY * (2**attempt),
+                                    KUZU_LOCK_MAX_DELAY,
+                                )
+                                logger.warning(
+                                    "Kuzu query blocked by lock (attempt %d/%d), "
+                                    "retrying in %.1fs…",
+                                    attempt + 1,
+                                    KUZU_LOCK_MAX_RETRIES,
+                                    delay,
+                                )
+                                self.close()
+                                time.sleep(delay)
+                                self._initialize_connection()
+                            else:
+                                raise
+
+                    raise last_exc
+
                 except Exception as e:
                     logger.error(f"Query execution failed: {str(e)}")
                     raise

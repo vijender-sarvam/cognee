@@ -6,7 +6,8 @@ import AppNav from "@/ui/Layout/AppNav";
 import addData from "@/modules/ingestion/addData";
 import cognifyDataset from "@/modules/datasets/cognifyDataset";
 import createDataset from "@/modules/datasets/createDataset";
-import useDatasets, { Dataset } from "@/modules/ingestion/useDatasets";
+import useDatasets, { Dataset, DatasetStatus } from "@/modules/ingestion/useDatasets";
+import { pollDatasetStatus, DatasetProcessingStatus } from "@/modules/datasets/getDatasetStatus";
 
 // ── Icons ──────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,29 @@ const FileIcon = () => (
   </svg>
 );
 
+// ── Status helpers ──────────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: DatasetStatus }) {
+  if (!status) return null;
+
+  const config: Record<string, { dot: string; bg: string; text: string; label: string }> = {
+    DATASET_PROCESSING_INITIATED: { dot: "bg-amber-400", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Queued" },
+    DATASET_PROCESSING_STARTED:   { dot: "bg-amber-400 animate-pulse", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Processing" },
+    DATASET_PROCESSING_COMPLETED: { dot: "bg-emerald-400", bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", label: "Ready" },
+    DATASET_PROCESSING_ERRORED:   { dot: "bg-red-400", bg: "bg-red-50 border-red-200", text: "text-red-700", label: "Error" },
+  };
+
+  const c = config[status];
+  if (!c) return null;
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${c.bg} ${c.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      {c.label}
+    </span>
+  );
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface IngestionJob {
@@ -43,14 +67,63 @@ interface IngestionJob {
   step: "uploading" | "cognifying" | "done" | "error";
   files: string[];
   error?: string;
+  vectorOnly?: boolean;
 }
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function IngestPage() {
-  const { datasets, refreshDatasets, removeDataset, getDatasetData } = useDatasets();
+  const { datasets, refreshDatasets, refreshStatuses, removeDataset, getDatasetData } = useDatasets();
 
-  useEffect(() => { refreshDatasets(); }, [refreshDatasets]);
+  const initialLoadRef = useRef(false);
+
+  useEffect(() => {
+    if (initialLoadRef.current) return;
+    initialLoadRef.current = true;
+
+    refreshDatasets().then((loadedDatasets: Dataset[]) => {
+      if (!loadedDatasets?.length) return;
+
+      const active = loadedDatasets.filter(
+        (d) =>
+          d.status === "DATASET_PROCESSING_INITIATED" ||
+          d.status === "DATASET_PROCESSING_STARTED",
+      );
+
+      if (!active.length) return;
+
+      const resumedJobs: IngestionJob[] = active.map((d) => ({
+        datasetId: d.id,
+        datasetName: d.name,
+        step: "cognifying" as const,
+        files: [],
+      }));
+
+      setJobs((prev) => [...resumedJobs, ...prev]);
+
+      for (const d of active) {
+        pollDatasetStatus(d.id, (status: DatasetProcessingStatus) => {
+          refreshStatuses();
+          if (status === "DATASET_PROCESSING_COMPLETED") {
+            setJobs((prev) =>
+              prev.map((j) =>
+                j.datasetId === d.id ? { ...j, step: "done" } : j,
+              ),
+            );
+            refreshDatasets();
+          } else if (status === "DATASET_PROCESSING_ERRORED") {
+            setJobs((prev) =>
+              prev.map((j) =>
+                j.datasetId === d.id
+                  ? { ...j, step: "error", error: "Pipeline failed on the server." }
+                  : j,
+              ),
+            );
+          }
+        });
+      }
+    });
+  }, [refreshDatasets, refreshStatuses]);
 
   // Upload form state
   const [datasetName, setDatasetName]     = useState("");
@@ -59,7 +132,26 @@ export default function IngestPage() {
   const [jobs, setJobs]                   = useState<IngestionJob[]>([]);
   const [expanded, setExpanded]           = useState<Set<string>>(new Set());
   const [chunkSize, setChunkSize]         = useState<number | undefined>(undefined);
+  const [skipGraph, setSkipGraph]         = useState(false);
+  const [docParser, setDocParser]         = useState<string | undefined>(undefined);
+  const [availableParsers, setAvailableParsers] = useState<string[]>([]);
+  const [sarvamLang, setSarvamLang]       = useState("or-IN");
+  const [sarvamLangs, setSarvamLangs]     = useState<Record<string, string>>({});
   const fileInputRef                      = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    import("@/utils").then(({ fetch: apiFetch }) => {
+      apiFetch("/v1/cognify/parsers")
+        .then((r) => r.json())
+        .then((parsers: string[]) => setAvailableParsers(parsers))
+        .catch(() => setAvailableParsers(["pypdf", "sarvam", "unstructured"]));
+
+      apiFetch("/v1/cognify/sarvam-languages")
+        .then((r) => r.json())
+        .then((langs: Record<string, string>) => setSarvamLangs(langs))
+        .catch(() => {});
+    });
+  }, []);
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => {
@@ -89,7 +181,7 @@ export default function IngestPage() {
   const removeFile = (name: string) =>
     setPendingFiles((prev) => prev.filter((f) => f.name !== name));
 
-  // Run ingestion
+  // Run ingestion — upload is synchronous, cognify fires in background then polls for status
   const handleIngest = useCallback(async () => {
     if (!pendingFiles.length) return;
 
@@ -100,6 +192,7 @@ export default function IngestPage() {
       datasetName: name,
       step:        "uploading",
       files:       pendingFiles.map((f) => f.name),
+      vectorOnly:  skipGraph,
     };
     setJobs((prev) => [job, ...prev]);
     setPendingFiles([]);
@@ -114,15 +207,26 @@ export default function IngestPage() {
 
       setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "cognifying" } : j)));
 
-      await cognifyDataset(dataset, false, chunkSize);
+      // Fire cognify in background — returns immediately with pipeline_run_id
+      const opts = docParser === "sarvam" ? { language: sarvamLang } : undefined;
+      await cognifyDataset(dataset, false, chunkSize, skipGraph, docParser, opts);
+      refreshStatuses();
 
-      setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "done" } : j)));
-      refreshDatasets();
+      // Poll server-side status until the pipeline reaches a terminal state
+      pollDatasetStatus(dataset.id, (status: DatasetProcessingStatus) => {
+        refreshStatuses();
+        if (status === "DATASET_PROCESSING_COMPLETED") {
+          setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "done" } : j)));
+          refreshDatasets();
+        } else if (status === "DATASET_PROCESSING_ERRORED") {
+          setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id ? { ...j, step: "error", error: "Pipeline failed on the server." } : j)));
+        }
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       setJobs((prev) => prev.map((j) => (j.datasetName === name ? { ...j, step: "error", error: message } : j)));
     }
-  }, [pendingFiles, datasetName, chunkSize, refreshDatasets]);
+  }, [pendingFiles, datasetName, chunkSize, skipGraph, docParser, sarvamLang, refreshDatasets, refreshStatuses]);
 
   // Add more files to existing dataset
   const handleAddToDataset = useCallback(
@@ -136,21 +240,35 @@ export default function IngestPage() {
         datasetName: dataset.name,
         step:        "uploading",
         files:       files.map((f) => f.name),
+        vectorOnly:  skipGraph,
       };
       setJobs((prev) => [job, ...prev]);
 
       try {
         await addData(dataset, files);
         setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step === "uploading" ? { ...j, step: "cognifying" } : j)));
-        await cognifyDataset(dataset, false, chunkSize);
-        setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step === "cognifying" ? { ...j, step: "done" } : j)));
-        refreshDatasets();
+
+        // Fire cognify in background — returns immediately
+        const opts = docParser === "sarvam" ? { language: sarvamLang } : undefined;
+        await cognifyDataset(dataset, false, chunkSize, skipGraph, docParser, opts);
+        refreshStatuses();
+
+        // Poll until terminal state
+        pollDatasetStatus(dataset.id, (status: DatasetProcessingStatus) => {
+          refreshStatuses();
+          if (status === "DATASET_PROCESSING_COMPLETED") {
+            setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step === "cognifying" ? { ...j, step: "done" } : j)));
+            refreshDatasets();
+          } else if (status === "DATASET_PROCESSING_ERRORED") {
+            setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step !== "done" ? { ...j, step: "error", error: "Pipeline failed on the server." } : j)));
+          }
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         setJobs((prev) => prev.map((j) => (j.datasetId === dataset.id && j.step !== "done" ? { ...j, step: "error", error: message } : j)));
       }
     },
-    [refreshDatasets]
+    [chunkSize, skipGraph, docParser, sarvamLang, refreshDatasets, refreshStatuses]
   );
 
   return (
@@ -258,12 +376,95 @@ export default function IngestPage() {
                   </p>
                 </div>
 
+                {/* Document parser */}
+                <div className="mt-4">
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">
+                    PDF Parser —{" "}
+                    <span className="text-indigo-600 font-bold">
+                      {docParser ?? "pypdf (default)"}
+                    </span>
+                  </label>
+                  <div className="flex gap-2">
+                    {[undefined, ...availableParsers.filter((p) => p !== "pypdf")].map((p) => (
+                      <button
+                        key={p ?? "default"}
+                        type="button"
+                        onClick={() => setDocParser(p)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                          docParser === p
+                            ? "bg-indigo-600 text-white border-indigo-600"
+                            : "bg-white text-gray-500 border-gray-200 hover:border-indigo-300 hover:text-indigo-600"
+                        }`}
+                      >
+                        {p ?? "pypdf"}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    {!docParser && "Default — pure-Python text extraction (fast, no extra deps)"}
+                    {docParser === "sarvam" && "Sarvam OCR — high-quality digitisation with layout & table support"}
+                    {docParser === "unstructured" && "Layout-aware extraction with table support (requires unstructured)"}
+                    {docParser && docParser !== "unstructured" && docParser !== "sarvam" && `Custom parser: ${docParser}`}
+                  </p>
+
+                  {/* Sarvam language selector */}
+                  {docParser === "sarvam" && (
+                    <div className="mt-3">
+                      <label className="block text-xs font-semibold text-gray-500 mb-1">
+                        Document Language —{" "}
+                        <span className="text-indigo-600 font-bold">
+                          {sarvamLangs[sarvamLang] ?? sarvamLang}
+                        </span>
+                      </label>
+                      <select
+                        value={sarvamLang}
+                        onChange={(e) => setSarvamLang(e.target.value)}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-700 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 outline-none"
+                      >
+                        {Object.entries(sarvamLangs).length > 0
+                          ? Object.entries(sarvamLangs).map(([code, label]) => (
+                              <option key={code} value={code}>
+                                {label} ({code})
+                              </option>
+                            ))
+                          : <option value="en-IN">English (en-IN)</option>
+                        }
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Skip graph toggle */}
+                <div className="mt-4 flex items-center gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={skipGraph}
+                    onClick={() => setSkipGraph((v) => !v)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer ${
+                      skipGraph ? "bg-indigo-600" : "bg-gray-200"
+                    }`}
+                  >
+                    <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                      skipGraph ? "translate-x-4" : "translate-x-0"
+                    }`} />
+                  </button>
+                  <div>
+                    <span className="text-xs font-semibold text-gray-600">Vector-only mode</span>
+                    <p className="text-[10px] text-gray-400">
+                      {skipGraph
+                        ? "Skips graph extraction & summarization — chunks + embeddings only (fast, no LLM cost)"
+                        : "Full pipeline — extracts entities, builds knowledge graph, and generates summaries"}
+                    </p>
+                  </div>
+                </div>
+
                 <button
                   onClick={handleIngest}
                   disabled={!pendingFiles.length}
                   className="mt-4 w-full py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
-                  Upload & Build Knowledge Graph
+                  {skipGraph ? "Upload & Store Embeddings" : "Upload & Build Knowledge Graph"}
                 </button>
               </div>
 
@@ -302,8 +503,10 @@ export default function IngestPage() {
                           job.step === "done"  ? "text-emerald-700" : "text-amber-700"
                         }`}>
                           {job.step === "uploading"  && "Uploading files…"}
-                          {job.step === "cognifying" && "Extracting entities & building graph…"}
-                          {job.step === "done"       && `Done — ${job.files.length} file(s) ingested`}
+                          {job.step === "cognifying" && (job.vectorOnly
+                            ? "Embedding chunks (vector-only)…"
+                            : "Extracting entities & building graph…")}
+                          {job.step === "done"       && `Done — ${job.files.length} file(s) ingested${job.vectorOnly ? " (vector-only)" : ""}`}
                           {job.step === "error"      && `Error: ${job.error}`}
                         </p>
 
@@ -357,8 +560,8 @@ export default function IngestPage() {
                           onClick={() => toggleExpand(dataset.id)}
                         >
                           <ChevronIcon open={isOpen} />
-                          <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
                           <span className="flex-1 text-sm font-medium text-gray-800 truncate">{dataset.name}</span>
+                          <StatusBadge status={dataset.status} />
                           {fileCount > 0 && (
                             <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full shrink-0">{fileCount} files</span>
                           )}

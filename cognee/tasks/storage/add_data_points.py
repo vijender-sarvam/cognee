@@ -29,6 +29,7 @@ async def add_data_points(
     context: Optional[Dict[str, Any]] = None,
     custom_edges: Optional[List] = None,
     embed_triplets: bool = False,
+    skip_graph_writes: bool = False,
 ) -> List[DataPoint]:
     """
     Add a batch of data points to the graph database by extracting nodes and edges,
@@ -72,6 +73,33 @@ async def add_data_points(
     if not all(isinstance(dp, DataPoint) for dp in data_points):
         raise InvalidDataPointsInAddDataPointsError("data_points: each item must be a DataPoint.")
 
+    # -- Vector-only fast path: index embeddings, skip graph DB entirely --
+    if skip_graph_writes:
+        from cognee.infrastructure.databases.vector import get_vector_engine as _get_vec
+
+        vec = _get_vec()
+        nodes = []
+        added_nodes, added_edges, visited_properties = {}, {}, {}
+
+        results = await asyncio.gather(
+            *[
+                get_graph_from_model(
+                    dp,
+                    added_nodes=added_nodes,
+                    added_edges=added_edges,
+                    visited_properties=visited_properties,
+                )
+                for dp in data_points
+            ]
+        )
+        for result_nodes, _ in results:
+            nodes.extend(result_nodes)
+
+        await index_data_points(nodes, vector_engine=vec)
+        logger.info("Vector-only mode: indexed %d node(s), skipped graph writes", len(nodes))
+        return data_points
+
+    # -- Full path: graph + vector --
     nodes = []
     edges = []
 

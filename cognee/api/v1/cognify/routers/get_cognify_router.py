@@ -9,11 +9,9 @@ from fastapi import APIRouter, WebSocket, Depends, WebSocketDisconnect
 from starlette.status import WS_1000_NORMAL_CLOSURE, WS_1008_POLICY_VIOLATION
 
 from cognee.api.DTO import InDTO
-from cognee.modules.pipelines.methods import get_pipeline_run
 from cognee.modules.users.models import User
 from cognee.modules.users.methods import get_authenticated_user
 from cognee.modules.users.get_user_db import get_user_db_context
-from cognee.modules.graph.methods import get_formatted_graph_data
 from cognee.modules.users.get_user_manager import get_user_manager_context
 from cognee.infrastructure.databases.relational import get_relational_engine
 from cognee.modules.users.authentication.default.default_jwt_strategy import DefaultJWTStrategy
@@ -23,11 +21,6 @@ from cognee.modules.pipelines.models.PipelineRunInfo import (
     PipelineRunCompleted,
     PipelineRunInfo,
     PipelineRunErrored,
-)
-from cognee.modules.pipelines.queues.pipeline_run_info_queues import (
-    get_from_queue,
-    initialize_queue,
-    remove_queue,
 )
 from cognee.shared.logging_utils import get_logger
 from cognee.shared.utils import send_telemetry
@@ -59,6 +52,19 @@ class CognifyPayloadDTO(InDTO):
         default=None,
         description="Maximum tokens per chunk. Smaller values (256-512) give finer-grained graphs. Defaults to min(embedding_max_tokens, llm_context/2).",
         examples=[256, 512, 768, 1024],
+    )
+    skip_graph: Optional[bool] = Field(
+        default=False,
+        description="When True, skips graph extraction and summarization. Only chunks and embeddings are stored (vector-only ingestion).",
+    )
+    document_parser: Optional[str] = Field(
+        default=None,
+        description="Name of the document parser to use for text extraction (e.g. 'pypdf', 'unstructured'). Defaults to 'pypdf'.",
+        examples=["pypdf", "unstructured"],
+    )
+    parser_options: Optional[dict] = Field(
+        default=None,
+        description="Extra options forwarded to the document parser constructor (e.g. {\"language\": \"od-IN\"} for sarvam).",
     )
 
 
@@ -170,6 +176,9 @@ def get_cognify_router() -> APIRouter:
                 custom_prompt=payload.custom_prompt,
                 chunks_per_batch=payload.chunks_per_batch,
                 chunk_size=payload.chunk_size,
+                skip_graph=payload.skip_graph or False,
+                document_parser=payload.document_parser,
+                parser_options=payload.parser_options,
             )
 
             # If any cognify run errored return JSONResponse with proper error status code
@@ -178,6 +187,20 @@ def get_cognify_router() -> APIRouter:
             return cognify_run
         except Exception as error:
             return JSONResponse(status_code=409, content={"error": str(error)})
+
+    @router.get("/parsers", response_model=list[str])
+    async def get_available_parsers():
+        """Return the names of all registered document parsers."""
+        from cognee.modules.data.processing.parsers import list_parsers
+
+        return list_parsers()
+
+    @router.get("/sarvam-languages", response_model=dict)
+    async def get_sarvam_languages():
+        """Return supported Sarvam OCR languages as {code: label} mapping."""
+        from cognee.modules.data.processing.parsers.sarvam_parser import SARVAM_LANGUAGES
+
+        return SARVAM_LANGUAGES
 
     @router.websocket("/subscribe/{pipeline_run_id}")
     async def subscribe_to_cognify_info(websocket: WebSocket, pipeline_run_id: str):
@@ -208,35 +231,117 @@ def get_cognify_router() -> APIRouter:
 
         pipeline_run_id = UUID(pipeline_run_id)
 
-        pipeline_run = await get_pipeline_run(pipeline_run_id)
+        from cognee.infrastructure.pipeline_queue.config import get_pipeline_queue_config
 
-        initialize_queue(pipeline_run_id)
+        queue_config = get_pipeline_queue_config()
 
-        while True:
-            pipeline_run_info = get_from_queue(pipeline_run_id)
-
-            if not pipeline_run_info:
-                await asyncio.sleep(2)
-                continue
-
-            if not isinstance(pipeline_run_info, PipelineRunInfo):
-                continue
-
-            try:
-                await websocket.send_json(
-                    {
-                        "pipeline_run_id": str(pipeline_run_info.pipeline_run_id),
-                        "status": pipeline_run_info.status,
-                        "payload": await get_formatted_graph_data(pipeline_run.dataset_id, user),
-                    }
-                )
-
-                if isinstance(pipeline_run_info, PipelineRunCompleted):
-                    remove_queue(pipeline_run_id)
-                    await websocket.close(code=WS_1000_NORMAL_CLOSURE)
-                    break
-            except WebSocketDisconnect:
-                remove_queue(pipeline_run_id)
-                break
+        if queue_config.pipeline_queue_backend == "arq":
+            await _subscribe_via_redis_pubsub(websocket, pipeline_run_id, user)
+        else:
+            await _subscribe_via_memory_queue(websocket, pipeline_run_id, user)
 
     return router
+
+
+async def _subscribe_via_redis_pubsub(websocket, pipeline_run_id: UUID, user):
+    """
+    WebSocket event streaming backed by Redis pub/sub (ARQ queue backend).
+
+    The ARQ worker publishes serialised PipelineRunInfo JSON to the channel
+    ``pipeline:{pipeline_run_id}``.  We relay each message to the WebSocket
+    client and close once the pipeline finishes or errors.
+    """
+    import json
+    import redis.asyncio as aioredis
+
+    from cognee.infrastructure.pipeline_queue.config import get_pipeline_queue_config
+    from cognee.modules.graph.methods import get_formatted_graph_data
+    from cognee.modules.pipelines.methods import get_pipeline_run
+
+    queue_cfg = get_pipeline_queue_config()
+    redis_client = aioredis.Redis(
+        host=queue_cfg.pipeline_queue_redis_host,
+        port=queue_cfg.pipeline_queue_redis_port,
+        username=queue_cfg.pipeline_queue_redis_username,
+        password=queue_cfg.pipeline_queue_redis_password,
+        db=queue_cfg.pipeline_queue_redis_db,
+        decode_responses=True,
+    )
+
+    pipeline_run = await get_pipeline_run(pipeline_run_id)
+    terminal_statuses = {"PipelineRunCompleted", "PipelineRunErrored", "PipelineRunAlreadyCompleted"}
+
+    try:
+        async with redis_client.pubsub() as pubsub:
+            await pubsub.subscribe(f"pipeline:{pipeline_run_id}")
+
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+
+                try:
+                    data = json.loads(message["data"])
+                    status = data.get("status", "")
+
+                    await websocket.send_json(
+                        {
+                            "pipeline_run_id": str(pipeline_run_id),
+                            "status": status,
+                            "payload": await get_formatted_graph_data(
+                                pipeline_run.dataset_id, user
+                            ),
+                        }
+                    )
+
+                    if status in terminal_statuses:
+                        await websocket.close(code=WS_1000_NORMAL_CLOSURE)
+                        break
+                except WebSocketDisconnect:
+                    break
+    finally:
+        await redis_client.aclose()
+
+
+async def _subscribe_via_memory_queue(websocket, pipeline_run_id: UUID, user):
+    """
+    WebSocket event streaming backed by the in-process asyncio queue (memory backend).
+    This is the original implementation — unchanged.
+    """
+    from cognee.modules.graph.methods import get_formatted_graph_data
+    from cognee.modules.pipelines.methods import get_pipeline_run
+    from cognee.modules.pipelines.queues.pipeline_run_info_queues import (
+        get_from_queue,
+        initialize_queue,
+        remove_queue,
+    )
+
+    pipeline_run = await get_pipeline_run(pipeline_run_id)
+
+    initialize_queue(pipeline_run_id)
+
+    while True:
+        pipeline_run_info = get_from_queue(pipeline_run_id)
+
+        if not pipeline_run_info:
+            await asyncio.sleep(2)
+            continue
+
+        if not isinstance(pipeline_run_info, PipelineRunInfo):
+            continue
+
+        try:
+            await websocket.send_json(
+                {
+                    "pipeline_run_id": str(pipeline_run_info.pipeline_run_id),
+                    "status": pipeline_run_info.status,
+                    "payload": await get_formatted_graph_data(pipeline_run.dataset_id, user),
+                }
+            )
+
+            if isinstance(pipeline_run_info, PipelineRunCompleted):
+                remove_queue(pipeline_run_id)
+                await websocket.close(code=WS_1000_NORMAL_CLOSURE)
+                break
+        except WebSocketDisconnect:
+            remove_queue(pipeline_run_id)
+            break

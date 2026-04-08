@@ -8,6 +8,7 @@ import { CTAButton, GhostButton, IconButton, Modal, NeutralButton, Select } from
 import addData from "@/modules/ingestion/addData";
 import { Dataset } from "@/modules/ingestion/useDatasets";
 import cognifyDataset from "@/modules/datasets/cognifyDataset";
+import { pollDatasetStatus } from "@/modules/datasets/getDatasetStatus";
 
 interface AddDataToCogneeProps {
   datasets: Dataset[];
@@ -50,21 +51,26 @@ export default function AddDataToCognee({ datasets, refreshDatasets, useCloud = 
       filesForUpload,
       useCloud
     )
-      .then(({ dataset_id, dataset_name }) => {
+      .then(async ({ dataset_id, dataset_name }) => {
         refreshDatasets();
 
-        return cognifyDataset(
+        await cognifyDataset(
           {
             id: dataset_id,
             name: dataset_name,
-            data: [],  // not important, just to mimick Dataset
-            status: "",  // not important, just to mimick Dataset
+            data: [],
+            status: "",
           },
           useCloud,
-        )
-          .then(() => {
-            setFilesForUpload([]);
-          });
+        );
+
+        setFilesForUpload([]);
+
+        pollDatasetStatus(dataset_id, (status) => {
+          if (status === "DATASET_PROCESSING_COMPLETED") {
+            refreshDatasets();
+          }
+        });
       });
   }, [filesForUpload, refreshDatasets, useCloud]);
 

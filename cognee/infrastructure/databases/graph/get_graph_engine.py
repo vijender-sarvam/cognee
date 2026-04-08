@@ -139,6 +139,7 @@ def _create_graph_engine(
             api_url=graph_database_url,
             username=graph_database_username,
             password=graph_database_password,
+            database_name=graph_database_name,
         )
     elif graph_database_provider == "neptune":
         try:

@@ -15,7 +15,7 @@ class DltRowDocument(Document):
     type: str = "dlt_row"
     mime_type: str = "application/x-dlt-row"
 
-    async def read(self, chunker_cls: Chunker, max_chunk_size: int):
+    async def read(self, chunker_cls: Chunker, max_chunk_size: int, **kwargs):
         from cognee.modules.chunking.models.DocumentChunk import DocumentChunk
         from cognee.infrastructure.files.utils.open_data_file import open_data_file
 

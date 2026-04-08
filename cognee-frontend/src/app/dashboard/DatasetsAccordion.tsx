@@ -9,6 +9,7 @@ import { CloseIcon, DatasetIcon, MinusIcon, PlusIcon } from "@/ui/Icons";
 import useDatasets, { Dataset } from "@/modules/ingestion/useDatasets";
 import addData from "@/modules/ingestion/addData";
 import cognifyDataset from "@/modules/datasets/cognifyDataset";
+import { pollDatasetStatus } from "@/modules/datasets/getDatasetStatus";
 import { DataFile } from "@/modules/ingestion/useData";
 import { LoadingIndicator } from "@/ui/App";
 
@@ -184,10 +185,13 @@ export default function DatasetsAccordion({
       .then(async () => {
         await getDatasetData(dataset.id);
 
-        return cognifyDataset(dataset, useCloud)
-          .finally(() => {
+        await cognifyDataset(dataset, useCloud);
+
+        pollDatasetStatus(dataset.id, (status) => {
+          if (status === "DATASET_PROCESSING_COMPLETED" || status === "DATASET_PROCESSING_ERRORED") {
             setProcessingDataset(null);
-          });
+          }
+        });
       });
   };
 
@@ -249,7 +253,7 @@ export default function DatasetsAccordion({
                 key={dataset.id}
                 title={(
                   <div className="flex flex-row gap-2 items-center py-1.5 cursor-pointer">
-                    {datasetInProcessing?.id == dataset.id ? <LoadingIndicator /> : <DatasetIcon />}
+                    {(datasetInProcessing?.id == dataset.id || dataset.status === "DATASET_PROCESSING_INITIATED" || dataset.status === "DATASET_PROCESSING_STARTED") ? <LoadingIndicator /> : <DatasetIcon />}
                     <span className="text-xs">{dataset.name}</span>
                   </div>
                 )}

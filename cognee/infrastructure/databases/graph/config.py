@@ -48,17 +48,24 @@ class GraphConfig(BaseSettings):
     graph_filename: str = ""
     graph_model: object = KnowledgeGraph
     graph_topology: object = KnowledgeGraph
-    graph_dataset_database_handler: str = "kuzu"
+    graph_dataset_database_handler: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="allow", populate_by_name=True)
 
-    # Model validator updates graph_filename and path dynamically after class creation based on current database provider
-    # If no specific graph_filename or path are provided
+    _PROVIDER_TO_HANDLER = {
+        "kuzu": "kuzu",
+        "kuzu-remote": "kuzu-remote",
+    }
+
     @pydantic.model_validator(mode="after")
     def fill_derived(self):
         provider = self.graph_database_provider.lower()
         base_config = get_base_config()
 
-        # Set default filename if no filename is provided
+        if not self.graph_dataset_database_handler:
+            self.graph_dataset_database_handler = self._PROVIDER_TO_HANDLER.get(
+                provider, "kuzu"
+            )
+
         if not self.graph_filename:
             self.graph_filename = f"cognee_graph_{provider}"
 

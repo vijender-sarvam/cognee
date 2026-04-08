@@ -10,6 +10,7 @@ import { CTAButton, GhostButton, Modal, NeutralButton, StatusIndicator } from "@
 import { useBoolean } from "@/utils";
 import addData from "@/modules/ingestion/addData";
 import cognifyDataset from "@/modules/datasets/cognifyDataset";
+import { pollDatasetStatus } from "@/modules/datasets/getDatasetStatus";
 import createDataset from "@/modules/datasets/createDataset";
 import getDatasetGraph from "@/modules/datasets/getDatasetGraph";
 import useDatasets, { Dataset } from "@/modules/ingestion/useDatasets";
@@ -77,18 +78,16 @@ export default function CogneeAddWidget({ onData, useCloud = false }: CogneeAddW
 
     return addData(dataset, files)
       .then(() => {
-        // const onUpdate = (data: NodesAndEdges) => {
-        //   onData({
-        //     nodes: data.nodes,
-        //     links: data.edges,
-        //   });
-        //   setProcessingFilesDone();
-        // };
-
         return cognifyDataset(dataset, useCloud)
           .then(() => {
-            refreshDatasets();
-            setProcessingFilesDone();
+            pollDatasetStatus(dataset.id, (status) => {
+              if (status === "DATASET_PROCESSING_COMPLETED") {
+                refreshDatasets();
+                setProcessingFilesDone();
+              } else if (status === "DATASET_PROCESSING_ERRORED") {
+                setProcessingFilesDone();
+              }
+            });
           });
       });
   };

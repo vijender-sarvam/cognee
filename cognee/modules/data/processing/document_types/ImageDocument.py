@@ -11,7 +11,7 @@ class ImageDocument(Document):
         result = await LLMGateway.transcribe_image(self.raw_data_location)
         return result.choices[0].message.content
 
-    async def read(self, chunker_cls: Chunker, max_chunk_size: int):
+    async def read(self, chunker_cls: Chunker, max_chunk_size: int, **kwargs):
         async def get_text():
             # Transcribe the image file
             yield await self.transcribe_image()
